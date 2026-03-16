@@ -1,8 +1,8 @@
 //! Thin helpers around hickory-proto for building DNS responses.
 
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
-use hickory_proto::rr::{Name, RData, Record, RecordType};
 use hickory_proto::rr::rdata::{A, AAAA, CNAME, MX, NS, PTR, TXT};
+use hickory_proto::rr::{Name, RData, Record, RecordType};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
@@ -56,9 +56,7 @@ pub fn to_rr(r: &DnsRecord) -> Option<Record> {
             let exchange = Name::from_str(&ensure_fqdn(&r.value)).ok()?;
             RData::MX(MX::new(r.priority.unwrap_or(10), exchange))
         }
-        config::RecordType::Txt => {
-            RData::TXT(TXT::new(vec![r.value.clone()]))
-        }
+        config::RecordType::Txt => RData::TXT(TXT::new(vec![r.value.clone()])),
         config::RecordType::Ptr => {
             let target = Name::from_str(&ensure_fqdn(&r.value)).ok()?;
             RData::PTR(PTR(target))
@@ -72,9 +70,9 @@ pub fn to_rr(r: &DnsRecord) -> Option<Record> {
 
     let mut rec = Record::new();
     rec.set_name(name)
-       .set_ttl(ttl)
-       .set_rr_type(rdata.record_type())
-       .set_data(Some(rdata));
+        .set_ttl(ttl)
+        .set_rr_type(rdata.record_type())
+        .set_data(Some(rdata));
     Some(rec)
 }
 
@@ -89,13 +87,13 @@ pub fn ensure_fqdn(name: &str) -> String {
 /// Map config RecordType to hickory RecordType
 pub fn map_qtype(rt: &config::RecordType) -> RecordType {
     match rt {
-        config::RecordType::A    => RecordType::A,
+        config::RecordType::A => RecordType::A,
         config::RecordType::Aaaa => RecordType::AAAA,
         config::RecordType::Cname => RecordType::CNAME,
-        config::RecordType::Mx   => RecordType::MX,
-        config::RecordType::Txt  => RecordType::TXT,
-        config::RecordType::Ptr  => RecordType::PTR,
-        config::RecordType::Ns   => RecordType::NS,
-        config::RecordType::Soa  => RecordType::SOA,
+        config::RecordType::Mx => RecordType::MX,
+        config::RecordType::Txt => RecordType::TXT,
+        config::RecordType::Ptr => RecordType::PTR,
+        config::RecordType::Ns => RecordType::NS,
+        config::RecordType::Soa => RecordType::SOA,
     }
 }

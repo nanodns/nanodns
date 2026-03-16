@@ -10,16 +10,16 @@
 //!   POST /sync          — accept versioned config push from a peer
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{
-    Json, Router,
     extract::State,
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -38,22 +38,17 @@ struct MgmtState {
 
 // ─── Start the HTTP server ────────────────────────────────────────────────────
 
-pub async fn start(
-    app: Arc<AppState>,
-    host: &str,
-    port: u16,
-    config_path: PathBuf,
-) -> Result<()> {
+pub async fn start(app: Arc<AppState>, host: &str, port: u16, config_path: PathBuf) -> Result<()> {
     let state = MgmtState { app, config_path };
 
     let router = Router::new()
-        .route("/health",     get(health))
-        .route("/ready",      get(ready))
-        .route("/metrics",    get(metrics))
-        .route("/cluster",    get(cluster))
+        .route("/health", get(health))
+        .route("/ready", get(ready))
+        .route("/metrics", get(metrics))
+        .route("/cluster", get(cluster))
         .route("/config/raw", get(config_raw))
-        .route("/reload",     post(reload))
-        .route("/sync",       post(sync_handler))
+        .route("/reload", post(reload))
+        .route("/sync", post(sync_handler))
         .with_state(state);
 
     let addr = format!("{}:{}", host, port);
@@ -74,7 +69,10 @@ async fn ready(State(s): State<MgmtState>) -> impl IntoResponse {
     // Ready once we have at least one record or explicit empty config loaded
     let cfg = s.app.config.load();
     let _ = cfg; // config is always loaded if we're here
-    (StatusCode::OK, Json(serde_json::json!({ "status": "ready" })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "status": "ready" })),
+    )
 }
 
 #[derive(Serialize)]
@@ -136,7 +134,8 @@ async fn config_raw(State(s): State<MgmtState>) -> impl IntoResponse {
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/json")],
             json,
-        ).into_response(),
+        )
+            .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -163,16 +162,22 @@ async fn reload(State(s): State<MgmtState>) -> impl IntoResponse {
                 });
             }
 
-            (StatusCode::OK, Json(serde_json::json!({
-                "status": "reloaded",
-                "version": old_version + 1
-            })))
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "reloaded",
+                    "version": old_version + 1
+                })),
+            )
         }
         Err(e) => {
             warn!("Reload failed: {}", e);
-            (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({
-                "error": e.to_string()
-            })))
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "error": e.to_string()
+                })),
+            )
         }
     }
 }
@@ -189,11 +194,14 @@ async fn sync_handler(
 ) -> impl IntoResponse {
     let current_version = s.app.config.load().version;
     if payload.version <= current_version {
-        return (StatusCode::OK, Json(serde_json::json!({
-            "status": "ignored",
-            "reason": "version not newer",
-            "current": current_version
-        })));
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "ignored",
+                "reason": "version not newer",
+                "current": current_version
+            })),
+        );
     }
 
     info!(
@@ -203,8 +211,11 @@ async fn sync_handler(
     s.app.cache.invalidate();
     s.app.config.store(Arc::new(payload.config));
 
-    (StatusCode::OK, Json(serde_json::json!({
-        "status": "applied",
-        "version": payload.version
-    })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "applied",
+            "version": payload.version
+        })),
+    )
 }

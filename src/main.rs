@@ -1,10 +1,10 @@
+mod cache;
 mod config;
 mod dns;
-mod cache;
-mod server;
-mod mgmt;
-mod sync;
 mod error;
+mod mgmt;
+mod server;
+mod sync;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -12,7 +12,11 @@ use std::path::PathBuf;
 use tracing::info;
 
 #[derive(Parser)]
-#[command(name = "nanodns", version = "1.0.0", about = "A lightweight DNS server for internal networks")]
+#[command(
+    name = "nanodns",
+    version = "1.0.0",
+    about = "A lightweight DNS server for internal networks"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -43,13 +47,9 @@ enum Commands {
         no_cache: bool,
     },
     /// Write an example config file
-    Init {
-        output: Option<PathBuf>,
-    },
+    Init { output: Option<PathBuf> },
     /// Validate a config file and print a summary
-    Check {
-        config: PathBuf,
-    },
+    Check { config: PathBuf },
 }
 
 #[tokio::main]
@@ -57,20 +57,29 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start { config, host, port, log_level, no_cache } => {
+        Commands::Start {
+            config,
+            host,
+            port,
+            log_level,
+            no_cache,
+        } => {
             // Load config first — CLI flags are overrides only
             let cfg = config::load(&config)?;
 
             // CLI flag > config file value
-            let effective_host  = host.unwrap_or_else(|| cfg.server.host.clone());
-            let effective_port  = port.unwrap_or(cfg.server.port);
-            let effective_log   = log_level.unwrap_or_else(|| cfg.server.log_level.clone());
+            let effective_host = host.unwrap_or_else(|| cfg.server.host.clone());
+            let effective_port = port.unwrap_or(cfg.server.port);
+            let effective_log = log_level.unwrap_or_else(|| cfg.server.log_level.clone());
 
             // Build tracing filter.
             // If log_queries is enabled in config, also enable debug for the server module
             // so per-query log lines appear.
             let filter = if cfg.server.log_queries {
-                format!("nanodns={},nanodns::dns::resolver=debug", effective_log.to_lowercase())
+                format!(
+                    "nanodns={},nanodns::dns::resolver=debug",
+                    effective_log.to_lowercase()
+                )
             } else {
                 format!("nanodns={}", effective_log.to_lowercase())
             };
@@ -85,7 +94,10 @@ async fn main() -> Result<()> {
             info!("NanoDNS v{} starting", env!("CARGO_PKG_VERSION"));
             info!(
                 "Config: {} | bind={}:{} | log_level={}",
-                config.display(), effective_host, effective_port, effective_log
+                config.display(),
+                effective_host,
+                effective_port,
+                effective_log
             );
 
             server::run(cfg, effective_host, effective_port, no_cache, config).await?;
@@ -98,19 +110,21 @@ async fn main() -> Result<()> {
         }
 
         Commands::Check { config } => {
-            tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).init();
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .init();
             match config::load(&config) {
                 Ok(cfg) => {
                     println!("✓ Config valid: {}", config.display());
                     println!("  Records  : {}", cfg.records.len());
                     println!("  Rewrites : {}", cfg.rewrites.len());
                     println!("  Zones    : {}", cfg.zones.len());
-                    println!(
-                        "  Bind     : {}:{}",
-                        cfg.server.host, cfg.server.port
-                    );
+                    println!("  Bind     : {}:{}", cfg.server.host, cfg.server.port);
                     println!("  Upstream : {:?}", cfg.server.upstream);
-                    println!("  Cache    : enabled={} ttl={}s size={}", cfg.server.cache_enabled, cfg.server.cache_ttl, cfg.server.cache_size);
+                    println!(
+                        "  Cache    : enabled={} ttl={}s size={}",
+                        cfg.server.cache_enabled, cfg.server.cache_ttl, cfg.server.cache_size
+                    );
                     println!("  Hot-reload: {}", cfg.server.hot_reload);
                     if let Some(mp) = cfg.server.mgmt_port {
                         println!("  Mgmt API : :{}", mp);

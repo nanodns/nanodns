@@ -3,12 +3,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode, Query};
+use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{DNSClass, Name, RecordType};
-use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
+use hickory_proto::serialize::binary::BinEncodable;
 
 use nanodns::cache::DnsCache;
-use nanodns::config::{Config, DnsRecord, RecordType as CfgType, RewriteAction, RewriteRule, ServerConfig};
+use nanodns::config::{
+    Config, DnsRecord, RecordType as CfgType, RewriteAction, RewriteRule, ServerConfig,
+};
 use nanodns::dns::Resolver;
 
 fn make_config(records: Vec<DnsRecord>, rewrites: Vec<RewriteRule>) -> Config {

@@ -112,7 +112,8 @@ impl Resolver {
             if config.server.log_queries {
                 info!(
                     "local  {} {:?} → {} answers",
-                    name_bare, qtype,
+                    name_bare,
+                    qtype,
                     resp.answers().len()
                 );
             }
@@ -133,7 +134,8 @@ impl Resolver {
                 if config.server.log_queries {
                     info!(
                         "upstream {} {:?} → rcode={:?} answers={}",
-                        name_bare, qtype,
+                        name_bare,
+                        qtype,
                         resp.response_code(),
                         resp.answers().len()
                     );
@@ -170,7 +172,9 @@ impl Resolver {
                 rec_name.eq_ignore_ascii_case(name)
             };
 
-            if !name_matches { continue; }
+            if !name_matches {
+                continue;
+            }
 
             let rec_qtype = packet::map_qtype(&record.record_type);
 
@@ -209,8 +213,8 @@ impl Resolver {
         ip: std::net::Ipv4Addr,
         ttl: u32,
     ) -> Message {
-        use hickory_proto::rr::{Name, RData, Record};
         use hickory_proto::rr::rdata::A;
+        use hickory_proto::rr::{Name, RData, Record};
         use std::str::FromStr;
 
         let mut resp = Message::new();
@@ -223,7 +227,10 @@ impl Resolver {
         }
         if let Ok(n) = Name::from_str(&ensure_fqdn(name)) {
             let mut rec = Record::new();
-            rec.set_name(n).set_ttl(ttl).set_rr_type(RecordType::A).set_data(Some(RData::A(A(ip))));
+            rec.set_name(n)
+                .set_ttl(ttl)
+                .set_rr_type(RecordType::A)
+                .set_data(Some(RData::A(A(ip))));
             resp.add_answer(rec);
         }
         resp
@@ -265,11 +272,8 @@ impl Resolver {
         sock.send_to(query, addr).await?;
 
         let mut buf = vec![0u8; 4096];
-        let (n, _) = tokio::time::timeout(
-            Duration::from_secs(3),
-            sock.recv_from(&mut buf),
-        )
-        .await??;
+        let (n, _) =
+            tokio::time::timeout(Duration::from_secs(3), sock.recv_from(&mut buf)).await??;
         Ok(buf[..n].to_vec())
     }
 }

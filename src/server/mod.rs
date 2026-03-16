@@ -31,10 +31,18 @@ pub async fn run(
     config_path: PathBuf,
 ) -> Result<()> {
     let cache_enabled = cfg.server.cache_enabled && !no_cache;
-    let cache = Arc::new(DnsCache::new(cfg.server.cache_size, cfg.server.cache_ttl, cache_enabled));
+    let cache = Arc::new(DnsCache::new(
+        cfg.server.cache_size,
+        cfg.server.cache_ttl,
+        cache_enabled,
+    ));
     let resolver = Resolver::new(cache.clone());
     let mgmt_port = cfg.server.mgmt_port;
-    let mgmt_host = cfg.server.mgmt_host.clone().unwrap_or_else(|| "0.0.0.0".into());
+    let mgmt_host = cfg
+        .server
+        .mgmt_host
+        .clone()
+        .unwrap_or_else(|| "0.0.0.0".into());
     let hot_reload = cfg.server.hot_reload;
     let peers = cfg.server.peers.clone();
 
@@ -117,11 +125,15 @@ async fn handle_packet(
     state: Arc<AppState>,
 ) {
     let config = state.config.load();
-    state.query_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    state
+        .query_count
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     let response = state.resolver.resolve(&query, &config).await;
 
-    if response.is_empty() { return; }
+    if response.is_empty() {
+        return;
+    }
 
     if let Err(e) = socket.send_to(&response, src).await {
         warn!("Failed to send response to {}: {}", src, e);

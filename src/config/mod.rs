@@ -30,13 +30,27 @@ pub struct ServerConfig {
     pub peers: Vec<String>,
 }
 
-fn default_host() -> String { "0.0.0.0".into() }
-fn default_port() -> u16 { 53 }
-fn default_upstream() -> Vec<String> { vec!["8.8.8.8".into(), "1.1.1.1".into()] }
-fn bool_true() -> bool { true }
-fn default_cache_ttl() -> u32 { 300 }
-fn default_cache_size() -> usize { 1000 }
-fn default_log_level() -> String { "INFO".into() }
+fn default_host() -> String {
+    "0.0.0.0".into()
+}
+fn default_port() -> u16 {
+    53
+}
+fn default_upstream() -> Vec<String> {
+    vec!["8.8.8.8".into(), "1.1.1.1".into()]
+}
+fn bool_true() -> bool {
+    true
+}
+fn default_cache_ttl() -> u32 {
+    300
+}
+fn default_cache_size() -> usize {
+    1000
+}
+fn default_log_level() -> String {
+    "INFO".into()
+}
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -93,7 +107,9 @@ pub struct DnsRecord {
     pub comment: Option<String>,
 }
 
-fn default_ttl() -> u32 { 300 }
+fn default_ttl() -> u32 {
+    300
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -153,11 +169,13 @@ pub fn load(path: &Path) -> Result<Config> {
 pub fn validate(cfg: &Config) -> Result<()> {
     for r in &cfg.records {
         if r.record_type == RecordType::A {
-            r.value.parse::<std::net::Ipv4Addr>()
+            r.value
+                .parse::<std::net::Ipv4Addr>()
                 .with_context(|| format!("Record '{}': invalid IPv4 '{}'", r.name, r.value))?;
         }
         if r.record_type == RecordType::Aaaa {
-            r.value.parse::<std::net::Ipv6Addr>()
+            r.value
+                .parse::<std::net::Ipv6Addr>()
                 .with_context(|| format!("Record '{}': invalid IPv6 '{}'", r.name, r.value))?;
         }
         if r.record_type == RecordType::Mx && r.priority.is_none() {

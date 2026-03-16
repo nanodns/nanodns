@@ -1,8 +1,8 @@
 //! DNS response cache with TTL expiry
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 struct CacheEntry {
@@ -33,7 +33,9 @@ impl DnsCache {
     }
 
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
-        if !self.enabled { return None; }
+        if !self.enabled {
+            return None;
+        }
         let mut entries = self.entries.lock().unwrap();
         if let Some(entry) = entries.get(key) {
             if entry.expires_at > Instant::now() {
@@ -45,7 +47,9 @@ impl DnsCache {
     }
 
     pub fn set(&self, key: String, data: Vec<u8>, ttl: Option<u32>) {
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
         let ttl = ttl
             .map(|t| Duration::from_secs(t as u64))
             .unwrap_or(self.default_ttl);

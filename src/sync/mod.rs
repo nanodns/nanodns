@@ -50,9 +50,7 @@ pub async fn push_to_peers(cfg: &Config, peers: &[String]) {
 
 /// Fetch just the version number from a peer's /metrics endpoint.
 pub async fn fetch_peer_version(peer: &str) -> anyhow::Result<u64> {
-    let client = reqwest::Client::builder()
-        .timeout(PEER_TIMEOUT)
-        .build()?;
+    let client = reqwest::Client::builder().timeout(PEER_TIMEOUT).build()?;
 
     let url = format!("http://{}/metrics", peer);
     let resp = client.get(&url).send().await?;
@@ -65,9 +63,7 @@ pub async fn fetch_peer_version(peer: &str) -> anyhow::Result<u64> {
 
 /// Fetch the full raw config JSON from a peer's /config/raw endpoint.
 pub async fn fetch_peer_config(peer: &str) -> anyhow::Result<Config> {
-    let client = reqwest::Client::builder()
-        .timeout(PEER_TIMEOUT)
-        .build()?;
+    let client = reqwest::Client::builder().timeout(PEER_TIMEOUT).build()?;
 
     let url = format!("http://{}/config/raw", peer);
     let resp = client.get(&url).send().await?;
