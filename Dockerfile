@@ -1,7 +1,7 @@
 # ── Build stage — Chainguard Rust (hardened, minimal CVE surface) ─────────────
 ARG PACKAGE=nanodns
 
-FROM cgr.dev/chainguard/rust AS build
+FROM chainguard/rust:latest AS build
 
 WORKDIR /app
 
@@ -16,11 +16,11 @@ COPY src ./src
 RUN cargo build --release && strip target/release/nanodns
 
 # ── Runtime stage — Chainguard glibc-dynamic (distroless, nonroot) ────────────
-FROM cgr.dev/chainguard/glibc-dynamic
+FROM chainguard/glibc-dynamic:latest
 
 ARG PACKAGE=nanodns
 
-LABEL org.opencontainers.image.source="https://github.com/iyuangang/nanodns" \
+LABEL org.opencontainers.image.source="https://github.com/nanodns/nanodns" \
       org.opencontainers.image.description="Lightweight DNS server for internal networks" \
       org.opencontainers.image.licenses="MIT"
 
