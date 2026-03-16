@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::RecordType;
-use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
+use hickory_proto::serialize::binary::BinEncodable;
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
