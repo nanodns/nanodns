@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::RecordType;
-use hickory_proto::serialize::binary::BinEncodable;
+use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use tokio::net::UdpSocket;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::cache::DnsCache;
 use crate::config::{Config, RewriteAction};
@@ -36,6 +36,23 @@ impl Resolver {
 
         let response = self.handle(&msg, config).await;
 
+        // Always log one line per query when log_queries is enabled
+        if config.server.log_queries {
+            if let Some(q) = msg.queries().first() {
+                let name = q.name().to_string();
+                let qtype = q.query_type();
+                let rcode = response.response_code();
+                let answers = response.answers().len();
+                info!(
+                    "Q {:<40} {:?}  → {} (answers={})",
+                    name.trim_end_matches('.'),
+                    qtype,
+                    rcode,
+                    answers
+                );
+            }
+        }
+
         match response.to_bytes() {
             Ok(b) => b,
             Err(e) => {
@@ -56,13 +73,13 @@ impl Resolver {
         let name_bare = name.trim_end_matches('.');
 
         if config.server.log_queries {
-            debug!("Query: {} {:?}", name_bare, qtype);
+            info!("query {} {:?}", name_bare, qtype);
         }
 
         // ── Cache lookup ──────────────────────────────────────────────────────
         let cache_key = DnsCache::key(name_bare, qtype.into());
         if let Some(cached) = self.cache.get(&cache_key) {
-            debug!("Cache hit: {}", cache_key);
+            debug!("cache hit {}", cache_key);
             if let Ok(mut m) = Message::from_vec(&cached) {
                 m.set_id(query.id());
                 return m;
@@ -92,6 +109,13 @@ impl Resolver {
         // ── Local records ─────────────────────────────────────────────────────
         let local = self.resolve_local(query, name_bare, qtype, config);
         if let Some(resp) = local {
+            if config.server.log_queries {
+                info!(
+                    "local  {} {:?} → {} answers",
+                    name_bare, qtype,
+                    resp.answers().len()
+                );
+            }
             // Cache it
             if let Ok(bytes) = resp.to_bytes() {
                 let ttl = resp.answers().first().map(|r| r.ttl());
@@ -101,8 +125,19 @@ impl Resolver {
         }
 
         // ── Upstream forwarding ───────────────────────────────────────────────
+        if config.server.log_queries {
+            info!("forward {} {:?} → upstream", name_bare, qtype);
+        }
         match self.forward(query, &config.server.upstream).await {
             Ok(resp) => {
+                if config.server.log_queries {
+                    info!(
+                        "upstream {} {:?} → rcode={:?} answers={}",
+                        name_bare, qtype,
+                        resp.response_code(),
+                        resp.answers().len()
+                    );
+                }
                 if let Ok(bytes) = resp.to_bytes() {
                     let ttl = resp.answers().first().map(|r| r.ttl());
                     self.cache.set(cache_key, bytes, ttl);
@@ -224,12 +259,17 @@ impl Resolver {
     }
 
     async fn send_udp(&self, query: &[u8], addr: SocketAddr) -> anyhow::Result<Vec<u8>> {
+        // Use unconnected send_to/recv_from to avoid Windows WSAECONNRESET (10054)
+        // that occurs with connect() when a previous packet gets an ICMP rejection.
         let sock = UdpSocket::bind("0.0.0.0:0").await?;
-        sock.connect(addr).await?;
-        sock.send(query).await?;
+        sock.send_to(query, addr).await?;
 
         let mut buf = vec![0u8; 4096];
-        let n = tokio::time::timeout(Duration::from_secs(3), sock.recv(&mut buf)).await??;
+        let (n, _) = tokio::time::timeout(
+            Duration::from_secs(3),
+            sock.recv_from(&mut buf),
+        )
+        .await??;
         Ok(buf[..n].to_vec())
     }
 }

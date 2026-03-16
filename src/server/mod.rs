@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use tokio::net::UdpSocket;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::cache::DnsCache;
 use crate::config::{self, Config};
@@ -93,7 +93,18 @@ pub async fn run(
                 });
             }
             Err(e) => {
-                error!("UDP recv error: {}", e);
+                // On Windows, sending a UDP packet to a closed port causes the OS to
+                // deliver a WSAECONNRESET (10054) error on the *next* recv_from call.
+                // This is a benign Windows-specific behaviour — log at debug and continue.
+                #[cfg(windows)]
+                if let Some(raw) = e.raw_os_error() {
+                    if raw == 10054 {
+                        debug!("UDP WSAECONNRESET (ICMP port-unreachable received) — ignored");
+                        continue;
+                    }
+                }
+                // Any other IO error: log as warning and keep running
+                warn!("UDP recv error: {}", e);
             }
         }
     }
@@ -117,7 +128,7 @@ async fn handle_packet(
     }
 }
 
-/// Poll the config file every 5 s and hot-reload if it changed.
+/// Poll the config file every 5 s and hot-reload on mtime change.
 async fn watch_config(path: PathBuf, state: Arc<AppState>) {
     let mut last_modified = get_mtime(&path);
     loop {
@@ -125,7 +136,7 @@ async fn watch_config(path: PathBuf, state: Arc<AppState>) {
         let current = get_mtime(&path);
         if current != last_modified {
             last_modified = current;
-            info!("Config file changed, reloading…");
+            info!("Config file changed, reloading...");
             match config::load(&path) {
                 Ok(new_cfg) => {
                     state.cache.invalidate();
