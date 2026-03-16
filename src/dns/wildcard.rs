@@ -10,7 +10,7 @@ pub fn matches(pattern: &str, name: &str) -> bool {
 
     // *.foo.bar should match any.foo.bar, deep.any.foo.bar, etc.
     let suffix = &pattern[1..]; // ".foo.bar"
-    name.ends_with(suffix) || name == &suffix[1..] // also match "foo.bar" itself
+    name.ends_with(suffix) || name == suffix[1..] // also match "foo.bar" itself
 }
 
 #[cfg(test)]
