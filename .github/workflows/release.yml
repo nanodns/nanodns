@@ -139,22 +139,41 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       # ── Package ─────────────────────────────────────────────────────────────
+      # nanodns.json is NOT committed — generate a fresh example via the binary
+      - name: Generate example config (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          target/${{ matrix.target }}/release/${{ matrix.artifact }} init nanodns.example.json
+
+      - name: Generate example config (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "target\${{ matrix.target }}\release\${{ matrix.artifact }}" init nanodns.example.json
+
       - name: Package (tar.gz — Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           BIN=target/${{ matrix.target }}/release/${{ matrix.artifact }}
           strip "$BIN" 2>/dev/null || true
-          tar czf "${{ matrix.archive }}" \
-            -C "$(dirname $BIN)" "$(basename $BIN)" \
-            README.md nanodns.json nanodns.service
+          # Collect everything into a staging dir so tar paths are predictable
+          mkdir -p staging
+          cp "$BIN"                staging/nanodns
+          cp README.md             staging/README.md
+          cp nanodns.example.json  staging/nanodns.example.json
+          cp nanodns.service       staging/nanodns.service
+          tar czf "${{ matrix.archive }}" -C staging .
+          rm -rf staging
 
       - name: Package (zip — Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $bin = "target\${{ matrix.target }}\release\${{ matrix.artifact }}"
-          Compress-Archive -Path $bin, "README.md", "nanodns.json" `
+          Compress-Archive `
+            -Path $bin, "README.md", "nanodns.example.json" `
             -DestinationPath "${{ matrix.archive }}"
 
       # ── Checksum ─────────────────────────────────────────────────────────────

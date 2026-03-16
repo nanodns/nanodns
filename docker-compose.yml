@@ -1,5 +1,7 @@
-# Single-node quick start
-# For a 3-node cluster, copy the node1 section and adjust IPs / peers.
+# Quick start:
+#   1. nanodns init nanodns.json      # generate config (or copy nanodns.example.json)
+#   2. docker compose up -d
+
 services:
   nanodns:
     build: .
@@ -9,42 +11,39 @@ services:
       - "53:53/udp"
       - "9053:9053/tcp"
     volumes:
+      # Mount your config — generate one first with: nanodns init nanodns.json
       - ./nanodns.json:/etc/nanodns/nanodns.json:ro
     cap_add:
       - NET_BIND_SERVICE
+    # Run as nonroot (Chainguard default)
+    # user: nonroot  # uncomment if overriding
 
-# ── 3-node HA cluster example (uncomment to use) ──────────────────────────────
+# ── 3-node HA cluster example ─────────────────────────────────────────────────
+# Uncomment and create cluster/node{1,2,3}.json before use.
 #
 #  node1:
-#    image: nanodns:latest
+#    build: .
 #    restart: unless-stopped
-#    ports:
-#      - "53:53/udp"
-#      - "9053:9053/tcp"
-#    volumes:
-#      - ./cluster/node1.json:/etc/nanodns/nanodns.json:ro
+#    ports: ["53:53/udp", "9053:9053/tcp"]
+#    volumes: ["./cluster/node1.json:/etc/nanodns/nanodns.json:ro"]
 #    networks:
 #      dns_net:
 #        ipv4_address: 10.100.0.11
 #
 #  node2:
-#    image: nanodns:latest
+#    build: .
 #    restart: unless-stopped
-#    ports:
-#      - "9054:9053/tcp"
-#    volumes:
-#      - ./cluster/node2.json:/etc/nanodns/nanodns.json:ro
+#    ports: ["9054:9053/tcp"]
+#    volumes: ["./cluster/node2.json:/etc/nanodns/nanodns.json:ro"]
 #    networks:
 #      dns_net:
 #        ipv4_address: 10.100.0.12
 #
 #  node3:
-#    image: nanodns:latest
+#    build: .
 #    restart: unless-stopped
-#    ports:
-#      - "9055:9053/tcp"
-#    volumes:
-#      - ./cluster/node3.json:/etc/nanodns/nanodns.json:ro
+#    ports: ["9055:9053/tcp"]
+#    volumes: ["./cluster/node3.json:/etc/nanodns/nanodns.json:ro"]
 #    networks:
 #      dns_net:
 #        ipv4_address: 10.100.0.13

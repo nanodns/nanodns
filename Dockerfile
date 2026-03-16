@@ -1,39 +1,38 @@
-# ── Build stage ───────────────────────────────────────────────────────────────
-FROM rust:1.77-alpine AS builder
+# ── Build stage — Chainguard Rust (hardened, minimal CVE surface) ─────────────
+ARG PACKAGE=nanodns
 
-ARG VERSION=dev
-ARG TARGETPLATFORM
-
-RUN apk add --no-cache musl-dev
+FROM cgr.dev/chainguard/rust AS build
 
 WORKDIR /app
-COPY Cargo.toml Cargo.lock* ./
 
-# Cache dependencies with a dummy main
+# Cache dependency layer: compile a stub first so source changes don't
+# invalidate the (expensive) dependency build.
+COPY Cargo.toml Cargo.lock* ./
 RUN mkdir src && echo "fn main(){}" > src/main.rs \
     && cargo build --release 2>/dev/null; rm -rf src
 
+# Real build
 COPY src ./src
-
-# Patch version if provided
-RUN if [ "$VERSION" != "dev" ]; then \
-      sed -i "s/^version = \".*\"/version = \"${VERSION#v}\"/" Cargo.toml; \
-    fi
-
 RUN cargo build --release && strip target/release/nanodns
 
-# ── Runtime stage — zero-OS scratch image ────────────────────────────────────
-FROM scratch
+# ── Runtime stage — Chainguard glibc-dynamic (distroless, nonroot) ────────────
+FROM cgr.dev/chainguard/glibc-dynamic
+
+ARG PACKAGE=nanodns
 
 LABEL org.opencontainers.image.source="https://github.com/iyuangang/nanodns" \
       org.opencontainers.image.description="Lightweight DNS server for internal networks" \
       org.opencontainers.image.licenses="MIT"
 
-COPY --from=builder /app/target/release/nanodns /nanodns
-# Config is mounted at runtime via -v ./nanodns.json:/etc/nanodns/nanodns.json
-# Use: nanodns init  to generate a starter config
+COPY --from=build --chown=nonroot:nonroot \
+     /app/target/release/${PACKAGE} /usr/local/bin/${PACKAGE}
 
+# Config is mounted at runtime:
+#   docker run -v ./nanodns.json:/etc/nanodns/nanodns.json ...
+# Generate a starter config with:
+#   docker run --rm nanodns init /tmp/nanodns.json
+
+# DNS (UDP) + management API (TCP)
 EXPOSE 53/udp 9053/tcp
 
-ENTRYPOINT ["/nanodns"]
-CMD ["start", "--config", "/etc/nanodns/nanodns.json"]
+CMD ["/usr/local/bin/nanodns", "start", "--config", "/etc/nanodns/nanodns.json"]
