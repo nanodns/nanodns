@@ -21,7 +21,7 @@ hickory-proto = "0.24"
 thiserror = "1"
 anyhow = "1"
 notify = "6"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 chrono = { version = "0.4", features = ["serde"] }
 lru = "0.12"
 tokio-util = { version = "0.7", features = ["codec"] }
