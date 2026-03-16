@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use tokio::net::UdpSocket;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::cache::DnsCache;
 use crate::config::{self, Config};
@@ -107,7 +107,10 @@ pub async fn run(
                 #[cfg(windows)]
                 if let Some(raw) = e.raw_os_error() {
                     if raw == 10054 {
-                        debug!("UDP WSAECONNRESET (ICMP port-unreachable received) — ignored");
+                        #[cfg(windows)]
+                        tracing::debug!(
+                            "UDP WSAECONNRESET (ICMP port-unreachable received) — ignored"
+                        );
                         continue;
                     }
                 }
