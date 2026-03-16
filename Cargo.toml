@@ -1,0 +1,42 @@
+[package]
+name = "nanodns"
+version = "1.0.0"
+edition = "2021"
+description = "A lightweight DNS server for internal networks — configured with a single JSON file"
+license = "MIT"
+
+[[bin]]
+name = "nanodns"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+axum = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+hickory-proto = "0.24"
+thiserror = "1"
+anyhow = "1"
+notify = "6"
+reqwest = { version = "0.12", features = ["json"] }
+chrono = { version = "0.4", features = ["serde"] }
+lru = "0.12"
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+arc-swap = "1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[lib]
+name = "nanodns"
+path = "src/lib.rs"

@@ -1,0 +1,42 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 53,
+    "upstream": ["8.8.8.8", "1.1.1.1"],
+    "cache_enabled": true,
+    "cache_ttl": 300,
+    "cache_size": 1000,
+    "log_level": "INFO",
+    "log_queries": false,
+    "hot_reload": true,
+    "mgmt_port": 9053,
+    "peers": []
+  },
+  "zones": {
+    "internal.lan": {
+      "soa": {
+        "mname": "ns1.internal.lan",
+        "rname": "admin.internal.lan",
+        "serial": 2024010101,
+        "refresh": 3600,
+        "retry": 900,
+        "expire": 604800,
+        "minimum": 300
+      },
+      "ns": ["ns1.internal.lan"]
+    }
+  },
+  "records": [
+    { "name": "web.internal.lan",   "type": "A",     "value": "192.168.1.100", "ttl": 300 },
+    { "name": "db.internal.lan",    "type": "A",     "value": "192.168.1.101" },
+    { "name": "api.internal.lan",   "type": "CNAME", "value": "web.internal.lan" },
+    { "name": "internal.lan",       "type": "MX",    "value": "mail.internal.lan", "priority": 10 },
+    { "name": "*.app.internal.lan", "type": "A",     "value": "192.168.1.200", "wildcard": true },
+    { "name": "internal.lan",       "type": "TXT",   "value": "v=spf1 mx ~all" }
+  ],
+  "rewrites": [
+    { "match": "ads.example.com", "action": "nxdomain" },
+    { "match": "*.tracker.net",   "action": "nxdomain" }
+  ],
+  "version": 1
+}
