@@ -1,0 +1,42 @@
+# git-cliff configuration — conventional commit changelog
+# https://git-cliff.org/docs/configuration
+
+[changelog]
+header = ""
+body = """
+{% if version %}\
+## {{ version }} — {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## Unreleased
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }} ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/$GITHUB_REPO/commit/{{ commit.id }}))
+{%- endfor %}
+{% endfor %}\n
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+commit_parsers = [
+  { message = "^feat",     group = "Features"    },
+  { message = "^fix",      group = "Bug Fixes"   },
+  { message = "^perf",     group = "Performance" },
+  { message = "^refactor", group = "Refactor"    },
+  { message = "^test",     group = "Testing",    skip = true },
+  { message = "^ci",       group = "CI",         skip = true },
+  { message = "^build",    group = "Build",      skip = true },
+  { message = "^docs",     group = "Docs",       skip = true },
+  { message = "^style",    group = "Style",      skip = true },
+  { message = "^chore",    group = "Chore",      skip = true },
+]
+filter_commits = true
+tag_pattern = "v[0-9].*"
+skip_tags = ""
+ignore_tags = ""
+sort_commits = "newest"
