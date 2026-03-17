@@ -1,0 +1,202 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# test.yml  —  CI: lint + test on every push / PR
+#
+# Trigger rules (mirrors iyuangang/nanodns commit-prefix convention):
+#   feat / fix / perf / refactor  → full matrix (lint + test + coverage)
+#   test / ci / build             → full matrix
+#   docs / style / chore          → skipped entirely
+# ─────────────────────────────────────────────────────────────────────────────
+name: CI
+
+on:
+  push:
+    branches: ["main", "dev"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - "*.service"
+  pull_request:
+    branches: ["main"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+# Cancel redundant runs on the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Skip check ──────────────────────────────────────────────────────────────
+  # Skip workflows triggered by docs/style/chore commits (same as nanodns)
+  should-run:
+    name: Check if CI should run
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Check commit message prefix
+        id: check
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if echo "$MSG" | grep -qE '^(docs|style|chore)(\(.+\))?:'; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping CI for docs/style/chore commit"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Lint ────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (fmt + clippy)
+    needs: should-run
+    if: needs.should-run.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable + tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-lint-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ── Test matrix ─────────────────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.os }} / Rust ${{ matrix.rust }})
+    needs: should-run
+    if: needs.should-run.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable, beta]
+        exclude:
+          # Only run beta on Linux to keep matrix manageable
+          - os: windows-latest
+            rust: beta
+          - os: macos-latest
+            rust: beta
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-${{ matrix.rust }}-
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Run tests
+        run: cargo test --all -- --nocapture
+
+  # ── Coverage (Linux only) ───────────────────────────────────────────────────
+  coverage:
+    name: Coverage
+    needs: should-run
+    if: needs.should-run.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cov-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run coverage
+        run: |
+          cargo tarpaulin \
+            --out Xml \
+            --output-dir coverage \
+            --timeout 120 \
+            --exclude-files "src/main.rs" \
+            --ignore-tests
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage/cobertura.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── Security audit ──────────────────────────────────────────────────────────
+  audit:
+    name: Security audit
+    needs: should-run
+    if: needs.should-run.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit dependencies
+        run: cargo audit
+
+  # ── Summary gate ────────────────────────────────────────────────────────────
+  # Single job to require in branch protection rules
+  ci-success:
+    name: CI passed
+    needs: [lint, test, coverage, audit]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all jobs passed
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          for r in $results; do
+            if [ "$r" != "success" ] && [ "$r" != "skipped" ]; then
+              echo "Job failed: $r"
+              exit 1
+            fi
+          done
+          echo "All CI jobs passed ✓"
