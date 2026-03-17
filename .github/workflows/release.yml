@@ -320,7 +320,7 @@ jobs:
       # Auto-generate changelog from commits since last tag
       - name: Generate changelog
         id: changelog
-        uses: orhun/git-cliff-action@v3
+        uses: orhun/git-cliff-action@v4
         with:
           config: .github/cliff.toml
           args: --latest --strip header
