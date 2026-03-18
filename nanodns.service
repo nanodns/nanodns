@@ -1,6 +1,6 @@
 [Unit]
 Description=NanoDNS Server (Rust)
-Documentation=https://github.com/iyuangang/nanodns
+Documentation=https://github.com/nanodns/nanodns
 After=network.target
 
 [Service]
