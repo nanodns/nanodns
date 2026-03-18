@@ -1,6 +1,6 @@
 [package]
 name = "nanodns"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2021"
 description = "A lightweight DNS server for internal networks — configured with a single JSON file"
 license = "MIT"

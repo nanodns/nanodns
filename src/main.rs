@@ -14,7 +14,7 @@ use tracing::info;
 #[derive(Parser)]
 #[command(
     name = "nanodns",
-    version = "1.0.0",
+    version = "1.0.4",
     about = "A lightweight DNS server for internal networks"
 )]
 struct Cli {
