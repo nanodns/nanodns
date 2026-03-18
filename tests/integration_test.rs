@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{DNSClass, Name, RecordType};
-use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
+use hickory_proto::serialize::binary::BinEncodable;
 
 use nanodns::cache::DnsCache;
 use nanodns::config::{
@@ -75,6 +75,7 @@ async fn test_nxdomain_rewrite() {
             pattern: "ads.example.com".into(),
             action: RewriteAction::Nxdomain,
             value: None,
+            comment: None,
         }],
     );
     let query = make_query("ads.example.com.", RecordType::A);
@@ -113,6 +114,7 @@ async fn test_wildcard_nxdomain_rewrite() {
             pattern: "*.tracker.net".into(),
             action: RewriteAction::Nxdomain,
             value: None,
+            comment: None,
         }],
     );
     let query = make_query("pixel.tracker.net.", RecordType::A);
