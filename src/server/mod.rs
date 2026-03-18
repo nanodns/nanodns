@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,23 +15,27 @@ use crate::cache::DnsCache;
 use crate::config::{self, Config};
 use crate::dns::Resolver;
 
-/// State shared across all async tasks
+// ─── Shared state ─────────────────────────────────────────────────────────────
+
+/// State shared across all async tasks.
+/// Constructed via `build_state()` so that tests can create it without
+/// binding any network sockets.
 pub struct AppState {
     pub config: ArcSwap<Config>,
     pub cache: Arc<DnsCache>,
     pub resolver: Resolver,
     pub start_time: std::time::Instant,
     pub query_count: std::sync::atomic::AtomicU64,
-    /// Path to the config file — needed to persist config_version after sync
+    /// Path to the config file — used to persist config_version after sync/reload
     pub config_path: PathBuf,
-    /// Last known mtime of the config file — updated after any programmatic
-    /// write (persist_version) so watch_config doesn't re-trigger on our own writes
+    /// Last known mtime — updated after programmatic writes so watch_config
+    /// doesn't re-trigger on our own writes
     pub last_mtime: std::sync::Mutex<Option<std::time::SystemTime>>,
 }
 
-/// Run the DNS server. All runtime parameters come from `cfg` (already merged
-/// with CLI overrides by main.rs before this is called).
-pub async fn run(cfg: Config, no_cache: bool, config_path: PathBuf) -> Result<()> {
+/// Build an `AppState` from a config, without binding any sockets.
+/// Extracted so integration tests can construct state directly.
+pub fn build_state(cfg: Config, no_cache: bool, config_path: PathBuf) -> Arc<AppState> {
     let cache_enabled = cfg.server.cache_enabled && !no_cache;
     let cache = Arc::new(DnsCache::new(
         cfg.server.cache_size,
@@ -38,23 +43,30 @@ pub async fn run(cfg: Config, no_cache: bool, config_path: PathBuf) -> Result<()
         cache_enabled,
     ));
     let resolver = Resolver::new(cache.clone());
+    let initial_mtime = mtime(&config_path);
+    Arc::new(AppState {
+        config: ArcSwap::new(Arc::new(cfg)),
+        cache,
+        resolver,
+        start_time: std::time::Instant::now(),
+        query_count: std::sync::atomic::AtomicU64::new(0),
+        config_path,
+        last_mtime: std::sync::Mutex::new(initial_mtime),
+    })
+}
 
-    // Snapshot fields needed by sub-tasks before cfg is moved into ArcSwap
+// ─── Main entry point ─────────────────────────────────────────────────────────
+
+/// Run the DNS server. All runtime parameters come from `cfg` (already merged
+/// with CLI overrides by main.rs).
+pub async fn run(cfg: Config, no_cache: bool, config_path: PathBuf) -> Result<()> {
     let mgmt_enabled = cfg.server.mgmt_port > 0;
     let mgmt_addr = format!("{}:{}", cfg.server.mgmt_host, cfg.server.mgmt_port);
     let hot_reload = cfg.server.hot_reload;
     let peers = cfg.server.peers.clone();
     let bind_addr = format!("{}:{}", cfg.server.host, cfg.server.port);
 
-    let state = Arc::new(AppState {
-        config: ArcSwap::new(Arc::new(cfg)),
-        cache: cache.clone(),
-        resolver,
-        start_time: std::time::Instant::now(),
-        query_count: std::sync::atomic::AtomicU64::new(0),
-        config_path: config_path.clone(),
-        last_mtime: std::sync::Mutex::new(mtime(&config_path)),
-    });
+    let state = build_state(cfg, no_cache, config_path);
 
     // ── DNS UDP listener ──────────────────────────────────────────────────────
     let socket = UdpSocket::bind(&bind_addr).await?;
@@ -72,8 +84,13 @@ pub async fn run(cfg: Config, no_cache: bool, config_path: PathBuf) -> Result<()
         let state3 = state.clone();
         let mgmt_addr2 = mgmt_addr.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::mgmt::start(state3, &mgmt_addr2).await {
-                error!("Management API error: {}", e);
+            match tokio::net::TcpListener::bind(&mgmt_addr2).await {
+                Ok(listener) => {
+                    if let Err(e) = crate::mgmt::start_with_listener(state3, listener).await {
+                        error!("Management API error: {}", e);
+                    }
+                }
+                Err(e) => error!("Management API bind failed on {}: {}", mgmt_addr2, e),
             }
         });
     }
@@ -85,18 +102,22 @@ pub async fn run(cfg: Config, no_cache: bool, config_path: PathBuf) -> Result<()
     }
 
     // ── Main UDP receive loop ─────────────────────────────────────────────────
+    serve_udp(socket, state).await
+}
+
+/// Receive DNS queries on `socket` and dispatch them.
+/// Extracted so tests can call it with a pre-bound socket on an ephemeral port.
+pub async fn serve_udp(socket: Arc<UdpSocket>, state: Arc<AppState>) -> Result<()> {
     let mut buf = vec![0u8; 4096];
     loop {
         match socket.recv_from(&mut buf).await {
             Ok((n, src)) => {
                 let query = buf[..n].to_vec();
                 let sock = socket.clone();
-                let state = state.clone();
-                tokio::spawn(async move { handle_packet(query, src, sock, state).await });
+                let st = state.clone();
+                tokio::spawn(async move { handle_packet(query, src, sock, st).await });
             }
             Err(e) => {
-                // Windows: WSAECONNRESET (10054) on UDP is benign — previous send
-                // hit a closed port, the ICMP reply surfaces here. Ignore it.
                 #[cfg(windows)]
                 if let Some(raw) = e.raw_os_error() {
                     if raw == 10054 {
@@ -110,15 +131,15 @@ pub async fn run(cfg: Config, no_cache: bool, config_path: PathBuf) -> Result<()
     }
 }
 
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
 async fn handle_packet(
     query: Vec<u8>,
     src: SocketAddr,
     socket: Arc<UdpSocket>,
     state: Arc<AppState>,
 ) {
-    state
-        .query_count
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    state.query_count.fetch_add(1, Ordering::Relaxed);
     let config = state.config.load();
     let response = state.resolver.resolve(&query, &config).await;
     if response.is_empty() {
@@ -130,9 +151,7 @@ async fn handle_packet(
 }
 
 /// Poll config file every 5 s; hot-reload only on user-driven mtime changes.
-/// Uses `state.last_mtime` so that programmatic writes (persist_version, peer sync)
-/// can update the baseline and prevent false reload triggers.
-async fn watch_config(state: Arc<AppState>) {
+pub async fn watch_config(state: Arc<AppState>) {
     loop {
         tokio::time::sleep(Duration::from_secs(5)).await;
         let cur = mtime(&state.config_path);
@@ -155,11 +174,9 @@ async fn watch_config(state: Arc<AppState>) {
                 state.config.store(Arc::new(new_cfg));
                 info!("Config reloaded — config_version now {}", new_version);
 
-                // Persist version — this changes mtime again, so update our baseline
                 if let Err(e) = config::persist_version(&state.config_path, new_version) {
                     warn!("Could not persist config_version: {}", e);
                 }
-                // Update last_mtime to the post-write mtime so we don't re-trigger
                 *state.last_mtime.lock().unwrap() = mtime(&state.config_path);
 
                 if !peers.is_empty() {
@@ -170,7 +187,6 @@ async fn watch_config(state: Arc<AppState>) {
                 }
             }
             Err(e) => {
-                // Even on parse failure, update mtime so we don't spam retries
                 *state.last_mtime.lock().unwrap() = cur;
                 warn!("Config reload failed: {} — keeping current config", e);
             }

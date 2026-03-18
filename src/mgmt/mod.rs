@@ -34,9 +34,9 @@ struct MgmtState {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-pub async fn start(app: Arc<AppState>, addr: &str) -> Result<()> {
+fn build_router(app: Arc<AppState>) -> Router {
     let state = MgmtState { app };
-    let router = Router::new()
+    Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
@@ -44,11 +44,24 @@ pub async fn start(app: Arc<AppState>, addr: &str) -> Result<()> {
         .route("/config/raw", get(config_raw))
         .route("/reload", post(reload))
         .route("/sync", post(sync_handler))
-        .with_state(state);
+        .with_state(state)
+}
 
-    info!("Management API listening on http://{}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router).await?;
+/// Bind `addr` and start the management HTTP API.
+///
+/// In integration tests, prefer calling `TcpListener::bind("127.0.0.1:0")`
+/// yourself, reading the OS-assigned port, and passing the listener here —
+/// this avoids the double-bind race where the port is released between two
+/// separate `bind` calls.
+pub async fn start_with_listener(
+    app: Arc<AppState>,
+    listener: tokio::net::TcpListener,
+) -> Result<()> {
+    info!(
+        "Management API listening on http://{}",
+        listener.local_addr()?
+    );
+    axum::serve(listener, build_router(app)).await?;
     Ok(())
 }
 
