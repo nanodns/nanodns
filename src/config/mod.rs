@@ -200,16 +200,6 @@ pub struct Config {
     pub zones: HashMap<String, ZoneConfig>,
 }
 
-impl Config {
-    /// Version accessor — always use config_version field
-    pub fn version(&self) -> u64 {
-        self.server.config_version
-    }
-    pub fn set_version(&mut self, v: u64) {
-        self.server.config_version = v;
-    }
-}
-
 pub fn load(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Cannot read config: {}", path.display()))?;
@@ -219,23 +209,28 @@ pub fn load(path: &Path) -> Result<Config> {
     Ok(cfg)
 }
 
-/// Persist only the `server.config_version` field back to the config file on disk.
-///
-/// This is called after every successful reload or peer-sync so that the version
-/// survives a process restart. We do a read-modify-write using `serde_json::Value`
-/// to avoid reformatting or reordering any other fields in the file.
+/// Write the full `Config` back to disk (used after peer-sync so all fields
+/// including records, rewrites, zones are persisted, not just the version).
+pub fn save(path: &Path, cfg: &Config) -> Result<()> {
+    let json = serde_json::to_string_pretty(cfg).context("Cannot serialize config")?;
+    std::fs::write(path, json)
+        .with_context(|| format!("Cannot write config to {}", path.display()))?;
+    Ok(())
+}
+
+/// Persist only `server.config_version` back into the existing config file
+/// using a read-modify-write so all other fields and formatting are preserved.
+/// Used after hot-reload (the file content is already correct, only version changes).
 pub fn persist_version(path: &Path, version: u64) -> Result<()> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Cannot read config for version persist: {}", path.display()))?;
 
-    let mut value: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| "Cannot parse config JSON for version persist")?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&content).context("Cannot parse config JSON for version persist")?;
 
-    // Patch only server.config_version — leave everything else untouched
     if let Some(server) = value.get_mut("server").and_then(|s| s.as_object_mut()) {
         server.insert("config_version".to_string(), serde_json::json!(version));
     } else {
-        // No "server" key yet — create it with just config_version
         value["server"] = serde_json::json!({ "config_version": version });
     }
 

@@ -20,7 +20,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::{info, warn};
 
 use crate::config;
@@ -211,12 +211,14 @@ async fn sync_handler(
         my_version, payload.config_version
     );
     let new_version = payload.config_version;
-    s.app.cache.invalidate();
-    s.app.config.store(Arc::new(payload.config));
+    let new_cfg = payload.config;
 
-    // Persist the synced version to disk so it survives a restart
-    if let Err(e) = config::persist_version(&s.app.config_path, new_version) {
-        warn!("Could not persist config_version after sync: {}", e);
+    s.app.cache.invalidate();
+    s.app.config.store(Arc::new(new_cfg.clone()));
+
+    // Persist the FULL synced config to disk (records + version) so it survives restart
+    if let Err(e) = config::save(&s.app.config_path, &new_cfg) {
+        warn!("Could not persist synced config to disk: {}", e);
     }
     // Update last_mtime baseline so watch_config doesn't re-trigger on our write
     *s.app.last_mtime.lock().unwrap() = crate::server::mtime(&s.app.config_path);
