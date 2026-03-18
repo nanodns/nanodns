@@ -23,6 +23,9 @@ pub struct AppState {
     pub query_count: std::sync::atomic::AtomicU64,
     /// Path to the config file — needed to persist config_version after sync
     pub config_path: PathBuf,
+    /// Last known mtime of the config file — updated after any programmatic
+    /// write (persist_version) so watch_config doesn't re-trigger on our own writes
+    pub last_mtime: std::sync::Mutex<Option<std::time::SystemTime>>,
 }
 
 /// Run the DNS server. All runtime parameters come from `cfg` (already merged
@@ -50,6 +53,7 @@ pub async fn run(cfg: Config, no_cache: bool, config_path: PathBuf) -> Result<()
         start_time: std::time::Instant::now(),
         query_count: std::sync::atomic::AtomicU64::new(0),
         config_path: config_path.clone(),
+        last_mtime: std::sync::Mutex::new(mtime(&config_path)),
     });
 
     // ── DNS UDP listener ──────────────────────────────────────────────────────
@@ -60,8 +64,7 @@ pub async fn run(cfg: Config, no_cache: bool, config_path: PathBuf) -> Result<()
     // ── Hot-reload watcher ────────────────────────────────────────────────────
     if hot_reload {
         let state2 = state.clone();
-        let path = config_path.clone();
-        tokio::spawn(async move { watch_config(path, state2).await });
+        tokio::spawn(async move { watch_config(state2).await });
     }
 
     // ── Management HTTP API ───────────────────────────────────────────────────
@@ -126,45 +129,55 @@ async fn handle_packet(
     }
 }
 
-/// Poll config file every 5 s; hot-reload on mtime change.
-async fn watch_config(path: PathBuf, state: Arc<AppState>) {
-    let mut last_mtime = mtime(&path);
+/// Poll config file every 5 s; hot-reload only on user-driven mtime changes.
+/// Uses `state.last_mtime` so that programmatic writes (persist_version, peer sync)
+/// can update the baseline and prevent false reload triggers.
+async fn watch_config(state: Arc<AppState>) {
     loop {
         tokio::time::sleep(Duration::from_secs(5)).await;
-        let cur = mtime(&path);
-        if cur != last_mtime {
-            last_mtime = cur;
-            info!("Config changed — reloading...");
-            match config::load(&path) {
-                Ok(mut new_cfg) => {
-                    // Bump config_version — same as /reload endpoint does
-                    let new_version = state.config.load().server.config_version + 1;
-                    new_cfg.server.config_version = new_version;
+        let cur = mtime(&state.config_path);
+        let changed = {
+            let known = state.last_mtime.lock().unwrap();
+            cur != *known
+        };
+        if !changed {
+            continue;
+        }
 
-                    let peers = new_cfg.server.peers.clone();
-                    state.cache.invalidate();
-                    state.config.store(Arc::new(new_cfg));
-                    info!("Config reloaded — config_version now {}", new_version);
+        info!("Config changed — reloading...");
+        match config::load(&state.config_path) {
+            Ok(mut new_cfg) => {
+                let new_version = state.config.load().server.config_version + 1;
+                new_cfg.server.config_version = new_version;
 
-                    // Persist version to disk so it survives a restart
-                    if let Err(e) = config::persist_version(&path, new_version) {
-                        warn!("Could not persist config_version to disk: {}", e);
-                    }
+                let peers = new_cfg.server.peers.clone();
+                state.cache.invalidate();
+                state.config.store(Arc::new(new_cfg));
+                info!("Config reloaded — config_version now {}", new_version);
 
-                    // Push to peers immediately (same behaviour as /reload)
-                    if !peers.is_empty() {
-                        let cfg_snapshot = (*state.config.load()).clone();
-                        tokio::spawn(async move {
-                            crate::sync::push_to_peers(&cfg_snapshot, &peers).await;
-                        });
-                    }
+                // Persist version — this changes mtime again, so update our baseline
+                if let Err(e) = config::persist_version(&state.config_path, new_version) {
+                    warn!("Could not persist config_version: {}", e);
                 }
-                Err(e) => warn!("Config reload failed: {} — keeping current config", e),
+                // Update last_mtime to the post-write mtime so we don't re-trigger
+                *state.last_mtime.lock().unwrap() = mtime(&state.config_path);
+
+                if !peers.is_empty() {
+                    let cfg_snapshot = (*state.config.load()).clone();
+                    tokio::spawn(async move {
+                        crate::sync::push_to_peers(&cfg_snapshot, &peers).await;
+                    });
+                }
+            }
+            Err(e) => {
+                // Even on parse failure, update mtime so we don't spam retries
+                *state.last_mtime.lock().unwrap() = cur;
+                warn!("Config reload failed: {} — keeping current config", e);
             }
         }
     }
 }
 
-fn mtime(path: &PathBuf) -> Option<std::time::SystemTime> {
+pub fn mtime(path: &PathBuf) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }

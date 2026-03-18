@@ -155,6 +155,8 @@ async fn reload(State(s): State<MgmtState>) -> impl IntoResponse {
             if let Err(e) = config::persist_version(config_path, new_version) {
                 warn!("Could not persist config_version: {}", e);
             }
+            // Update last_mtime baseline so watch_config doesn't re-trigger
+            *s.app.last_mtime.lock().unwrap() = crate::server::mtime(config_path);
 
             // Push to peers immediately (best-effort, non-blocking)
             if !peers.is_empty() {
@@ -216,6 +218,8 @@ async fn sync_handler(
     if let Err(e) = config::persist_version(&s.app.config_path, new_version) {
         warn!("Could not persist config_version after sync: {}", e);
     }
+    // Update last_mtime baseline so watch_config doesn't re-trigger on our write
+    *s.app.last_mtime.lock().unwrap() = crate::server::mtime(&s.app.config_path);
 
     (
         StatusCode::OK,
