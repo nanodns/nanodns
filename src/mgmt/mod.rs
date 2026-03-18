@@ -9,7 +9,6 @@
 //!   POST /reload        — reload from disk, bump config_version, push to peers
 //!   POST /sync          — accept versioned config push from a peer
 
-use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -31,13 +30,12 @@ use crate::sync::{self, SyncPayload};
 #[derive(Clone)]
 struct MgmtState {
     app: Arc<AppState>,
-    config_path: PathBuf,
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-pub async fn start(app: Arc<AppState>, addr: &str, config_path: PathBuf) -> Result<()> {
-    let state = MgmtState { app, config_path };
+pub async fn start(app: Arc<AppState>, addr: &str) -> Result<()> {
+    let state = MgmtState { app };
     let router = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -60,8 +58,7 @@ async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
 }
 
-async fn ready(State(s): State<MgmtState>) -> impl IntoResponse {
-    let _cfg = s.app.config.load(); // always ready if we have a config loaded
+async fn ready(State(_s): State<MgmtState>) -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(serde_json::json!({ "status": "ready" })),
@@ -142,24 +139,28 @@ async fn config_raw(State(s): State<MgmtState>) -> impl IntoResponse {
 
 async fn reload(State(s): State<MgmtState>) -> impl IntoResponse {
     info!("Manual reload triggered via /reload");
+    let config_path = &s.app.config_path;
 
-    match config::load(&s.config_path) {
+    match config::load(config_path) {
         Ok(mut new_cfg) => {
-            // Bump config_version — this is the source of truth for HA sync
             let new_version = s.app.config.load().server.config_version + 1;
             new_cfg.server.config_version = new_version;
 
             let peers = new_cfg.server.peers.clone();
-
             s.app.cache.invalidate();
             s.app.config.store(Arc::new(new_cfg));
             info!("Reloaded — config_version now {}", new_version);
 
+            // Persist new version to disk so it survives restart
+            if let Err(e) = config::persist_version(config_path, new_version) {
+                warn!("Could not persist config_version: {}", e);
+            }
+
             // Push to peers immediately (best-effort, non-blocking)
             if !peers.is_empty() {
-                let cfg_snapshot = (*s.app.config.load()).clone();
+                let cfg_snap = (*s.app.config.load()).clone();
                 tokio::spawn(async move {
-                    sync::push_to_peers(&cfg_snapshot, &peers).await;
+                    sync::push_to_peers(&cfg_snap, &peers).await;
                 });
             }
 
@@ -207,14 +208,20 @@ async fn sync_handler(
         "Accepting peer sync: v{} → v{}",
         my_version, payload.config_version
     );
+    let new_version = payload.config_version;
     s.app.cache.invalidate();
     s.app.config.store(Arc::new(payload.config));
+
+    // Persist the synced version to disk so it survives a restart
+    if let Err(e) = config::persist_version(&s.app.config_path, new_version) {
+        warn!("Could not persist config_version after sync: {}", e);
+    }
 
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "status": "applied",
-            "config_version": payload.config_version
+            "config_version": new_version
         })),
     )
 }

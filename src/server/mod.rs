@@ -21,6 +21,8 @@ pub struct AppState {
     pub resolver: Resolver,
     pub start_time: std::time::Instant,
     pub query_count: std::sync::atomic::AtomicU64,
+    /// Path to the config file — needed to persist config_version after sync
+    pub config_path: PathBuf,
 }
 
 /// Run the DNS server. All runtime parameters come from `cfg` (already merged
@@ -47,6 +49,7 @@ pub async fn run(cfg: Config, no_cache: bool, config_path: PathBuf) -> Result<()
         resolver,
         start_time: std::time::Instant::now(),
         query_count: std::sync::atomic::AtomicU64::new(0),
+        config_path: config_path.clone(),
     });
 
     // ── DNS UDP listener ──────────────────────────────────────────────────────
@@ -64,10 +67,9 @@ pub async fn run(cfg: Config, no_cache: bool, config_path: PathBuf) -> Result<()
     // ── Management HTTP API ───────────────────────────────────────────────────
     if mgmt_enabled {
         let state3 = state.clone();
-        let config_path2 = config_path.clone();
         let mgmt_addr2 = mgmt_addr.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::mgmt::start(state3, &mgmt_addr2, config_path2).await {
+            if let Err(e) = crate::mgmt::start(state3, &mgmt_addr2).await {
                 error!("Management API error: {}", e);
             }
         });
@@ -143,6 +145,11 @@ async fn watch_config(path: PathBuf, state: Arc<AppState>) {
                     state.cache.invalidate();
                     state.config.store(Arc::new(new_cfg));
                     info!("Config reloaded — config_version now {}", new_version);
+
+                    // Persist version to disk so it survives a restart
+                    if let Err(e) = config::persist_version(&path, new_version) {
+                        warn!("Could not persist config_version to disk: {}", e);
+                    }
 
                     // Push to peers immediately (same behaviour as /reload)
                     if !peers.is_empty() {
