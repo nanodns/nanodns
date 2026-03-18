@@ -5,9 +5,10 @@
 #
 # Jobs:
 #   1. test         — run full test suite (gate for everything else)
-#   2. build        — cross-compile binaries for 6 targets
-#   3. docker       — build & push multi-arch image to GHCR
-#   4. github-release — create GH release, attach all binaries + checksums
+#   2. build        — cross-compile binaries for 6 targets  ┐ run in parallel
+#   3. docker       — build & push multi-arch image          │ after test passes
+#   4. changelog    — generate CHANGELOG.md from git log     ┘
+#   5. github-release — create GH release, attach all binaries + changelog
 # ─────────────────────────────────────────────────────────────────────────────
 name: Release
 
@@ -267,7 +268,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -290,51 +291,158 @@ jobs:
       - name: Output image digest
         run: echo "Image digest ${{ steps.docker-build.outputs.digest }}"
 
-  # ── 4. GitHub Release + upload all binaries ───────────────────────────────
-  github-release:
-    name: GitHub Release
-    needs: [build, docker]
+  # ── 4. Changelog  (parallel with build + docker, needs test gate only) ──────
+  changelog:
+    name: Generate Changelog
     runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+
+    outputs:
+      previous-tag: ${{ steps.tags.outputs.previous }}
+
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0   # needed for changelog generation
+          fetch-depth: 0
 
-      # Download all binary artifacts produced in the build job
-      - name: Download all artifacts
+      - name: Resolve tag range
+        id: tags
+        run: |
+          CURRENT="${GITHUB_REF_NAME}"
+          PREVIOUS=$(git tag --sort=-version:refname \
+                     | grep -E '^v[0-9]' \
+                     | sed -n '2p')
+          echo "current=${CURRENT}"   >> "$GITHUB_OUTPUT"
+          echo "previous=${PREVIOUS}" >> "$GITHUB_OUTPUT"
+          echo "Current : ${CURRENT}"
+          echo "Previous: ${PREVIOUS:-<first release>}"
+
+      - name: Build author map (batch API fetch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO:     ${{ github.repository }}
+          PREV:     ${{ steps.tags.outputs.previous }}
+        run: |
+          RANGE="${PREV:+${PREV}..}HEAD"
+          : > /tmp/authors.tsv
+          git log ${RANGE} --format="%H %h" | while IFS=' ' read -r FULL SHORT; do
+            LOGIN=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/${REPO}/commits/${FULL}" \
+              --jq '.author.login // empty' 2>/dev/null || true)
+            [ -n "$LOGIN" ] && printf '%s\t@%s\n' "$SHORT" "$LOGIN" >> /tmp/authors.tsv
+          done
+          echo "Author map:"
+          cat /tmp/authors.tsv || true
+
+      - name: Write CHANGELOG.md
+        env:
+          CURRENT:  ${{ steps.tags.outputs.current }}
+          PREVIOUS: ${{ steps.tags.outputs.previous }}
+          REPO:     ${{ github.repository }}
+        run: |
+          RANGE="${PREVIOUS:+${PREVIOUS}..}HEAD"
+          DATE=$(date +'%Y-%m-%d')
+          mkdir -p changelog
+
+          annotate() {
+            while IFS= read -r line; do
+              HASH=$(echo "$line" | grep -oE '\([a-f0-9]{7}\)' | tr -d '()')
+              AUTHOR=$(grep "^${HASH}" /tmp/authors.tsv 2>/dev/null | cut -f2 || true)
+              echo "$line${AUTHOR:+ ${AUTHOR}}"
+            done
+          }
+
+          {
+            echo "# Changelog"
+            echo
+            echo "## ${CURRENT} (${DATE})"
+            echo
+
+            FEATS=$(git log ${RANGE} --pretty=format:"- %s (%h)" --reverse \
+                    | grep -E '^- feat(\([^)]+\))?:' \
+                    | sed -E 's/^- feat(\([^)]+\))?:/- /' | annotate)
+            [ -n "$FEATS" ] && { echo "### ⭐ New Features"; echo "$FEATS"; echo; }
+
+            PERFS=$(git log ${RANGE} --pretty=format:"- %s (%h)" --reverse \
+                    | grep -E '^- (perf|refactor)(\([^)]+\))?:' \
+                    | sed -E 's/^- (perf|refactor)(\([^)]+\))?:/- /' | annotate)
+            [ -n "$PERFS" ] && { echo "### ⚡️ Optimizations"; echo "$PERFS"; echo; }
+
+            FIXES=$(git log ${RANGE} --pretty=format:"- %s (%h)" --reverse \
+                    | grep -E '^- fix(\([^)]+\))?:' \
+                    | sed -E 's/^- fix(\([^)]+\))?:/- /' | annotate)
+            [ -n "$FIXES" ] && { echo "### 🐞 Bug Fixes"; echo "$FIXES"; echo; }
+
+            DOCS=$(git log ${RANGE} --pretty=format:"- %s (%h)" --reverse \
+                   | grep -E '^- docs(\([^)]+\))?:' \
+                   | sed -E 's/^- docs(\([^)]+\))?:/- /' | annotate)
+            [ -n "$DOCS" ] && { echo "### 📚 Documentation"; echo "$DOCS"; echo; }
+
+            DEPS=$(git log ${RANGE} --pretty=format:"- %s (%h)" --reverse \
+                   | grep -E '^- (build|deps)(\([^)]+\))?:' \
+                   | sed -E 's/^- (build|deps)(\([^)]+\))?:/- /' | annotate)
+            [ -n "$DEPS" ] && { echo "### ⬆️ Dependency Updates"; echo "$DEPS"; echo; }
+
+            OTHERS=$(git log ${RANGE} --pretty=format:"- %s (%h)" --reverse \
+                     | grep -vE '^- (feat|fix|docs|refactor|perf|build|deps)(\([^)]+\))?:' \
+                     | annotate)
+            [ -n "$OTHERS" ] && { echo "### 🔨 Other Changes"; echo "$OTHERS"; echo; }
+
+            CONTRIBUTORS=$(cut -f2 /tmp/authors.tsv 2>/dev/null | sort -u | tr '\n' ' ')
+            [ -n "$CONTRIBUTORS" ] && { echo "### 👥 Contributors"; echo "$CONTRIBUTORS"; echo; }
+
+            [ -n "$PREVIOUS" ] && \
+              echo "[Full Changelog](https://github.com/${REPO}/compare/${PREVIOUS}...${CURRENT})"
+          } > changelog/CHANGELOG.md
+
+          echo "--- CHANGELOG.md ---"
+          cat changelog/CHANGELOG.md
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: changelog
+          path: changelog/CHANGELOG.md
+          retention-days: 3
+
+  # ── 5. GitHub Release + upload all binaries ───────────────────────────────
+  github-release:
+    name: GitHub Release
+    needs: [build, docker, changelog]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download binary artifacts
         uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true
+          pattern: "nanodns-*"   # only binary archives, not the changelog artifact
+
+      - name: Download changelog artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: changelog
+          path: changelog
 
       - name: List release assets
         run: ls -lh dist/
 
-      # Combine all per-file sha256 into one CHECKSUMS.txt
       - name: Merge checksums
         run: |
           cat dist/*.sha256 | sort > dist/CHECKSUMS.txt
           echo "=== CHECKSUMS.txt ==="
           cat dist/CHECKSUMS.txt
 
-      # Auto-generate changelog from commits since last tag
-      - name: Generate changelog
-        id: changelog
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: .github/cliff.toml
-          args: --latest --strip header
-        env:
-          OUTPUT: CHANGELOG_FRAGMENT.md
-          GITHUB_REPO: ${{ github.repository }}
-        continue-on-error: true   # fall back to auto-generated notes if cliff.toml missing
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "NanoDNS ${{ github.ref_name }}"
-          body_path: ${{ steps.changelog.outputs.changelog != '' && 'CHANGELOG_FRAGMENT.md' || '' }}
-          generate_release_notes: ${{ steps.changelog.outputs.changelog == '' }}
+          body_path: changelog/CHANGELOG.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
@@ -343,27 +451,30 @@ jobs:
             dist/CHECKSUMS.txt
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Post image digest as release note annotation
       - name: Annotate release with Docker info
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          TAG: ${{ github.ref_name }}
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          TAG="${{ github.ref_name }}"
-          gh release edit "$TAG" \
-            --notes-start-tag "$TAG" \
-            --notes "$(gh release view "$TAG" --json body -q .body)
+          EXISTING=$(gh release view "$TAG" --json body -q .body)
+          # Write annotation to a temp file to avoid YAML --- ambiguity
+          cat > /tmp/docker_note.md << 'DOCKERNOTE'
 
           ---
           **Docker image** (multi-arch: amd64 / arm64 / arm/v7)
-          \`\`\`
-          docker pull ${IMAGE}:${TAG#v}
-          \`\`\`
+          ```
+          docker pull IMAGE_PLACEHOLDER:TAG_PLACEHOLDER
+          ```
           Verify signature:
-          \`\`\`
-          cosign verify \\
-            --certificate-identity-regexp='https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/.*' \\
-            --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \\
-            ${IMAGE}:${TAG#v}
-          \`\`\`" \
-          2>/dev/null || true   # non-fatal if annotation fails
+          ```
+          cosign verify \
+            --certificate-identity-regexp='https://github.com/REPO_PLACEHOLDER/.github/workflows/release.yml@refs/tags/.*' \
+            --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+            IMAGE_PLACEHOLDER:TAG_PLACEHOLDER
+          ```
+          DOCKERNOTE
+          REPO="${{ github.repository }}"
+          sed -i "s|IMAGE_PLACEHOLDER|${IMAGE}|g; s|TAG_PLACEHOLDER|${TAG#v}|g; s|REPO_PLACEHOLDER|${REPO}|g" /tmp/docker_note.md
+          NOTES="${EXISTING}$(cat /tmp/docker_note.md)"
+          gh release edit "$TAG" --notes "$NOTES" 2>/dev/null || true
