@@ -311,3 +311,174 @@ pub fn write_example(path: &Path) -> Result<()> {
     std::fs::write(path, json)?;
     Ok(())
 }
+
+// ─── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn tmp(name: &str) -> PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
+    #[test]
+    fn test_default_server_config() {
+        let s = ServerConfig::default();
+        assert_eq!(s.port, 53);
+        assert_eq!(s.host, "0.0.0.0");
+        assert!(s.cache_enabled);
+        assert!(s.hot_reload);
+        assert_eq!(s.mgmt_port, 0); // disabled by default
+        assert_eq!(s.upstream_timeout, 3);
+        assert_eq!(s.upstream_port, 53);
+        assert_eq!(s.config_version, 1);
+    }
+
+    #[test]
+    fn test_validate_valid_a_record() {
+        let cfg = Config {
+            server: ServerConfig::default(),
+            records: vec![DnsRecord {
+                name: "ok.lan".into(),
+                record_type: RecordType::A,
+                value: "1.2.3.4".into(),
+                ttl: 60,
+                priority: None,
+                wildcard: false,
+                comment: None,
+            }],
+            rewrites: vec![],
+            zones: std::collections::HashMap::new(),
+        };
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn test_validate_invalid_ipv4() {
+        let cfg = Config {
+            server: ServerConfig::default(),
+            records: vec![DnsRecord {
+                name: "bad.lan".into(),
+                record_type: RecordType::A,
+                value: "999.999.999.999".into(),
+                ttl: 300,
+                priority: None,
+                wildcard: false,
+                comment: None,
+            }],
+            rewrites: vec![],
+            zones: std::collections::HashMap::new(),
+        };
+        assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_ipv6() {
+        let cfg = Config {
+            server: ServerConfig::default(),
+            records: vec![DnsRecord {
+                name: "bad.lan".into(),
+                record_type: RecordType::Aaaa,
+                value: "not:valid:ipv6".into(),
+                ttl: 300,
+                priority: None,
+                wildcard: false,
+                comment: None,
+            }],
+            rewrites: vec![],
+            zones: std::collections::HashMap::new(),
+        };
+        assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn test_validate_mx_requires_priority() {
+        let cfg = Config {
+            server: ServerConfig::default(),
+            records: vec![DnsRecord {
+                name: "mail.lan".into(),
+                record_type: RecordType::Mx,
+                value: "mx.lan".into(),
+                ttl: 300,
+                priority: None,
+                wildcard: false,
+                comment: None,
+            }],
+            rewrites: vec![],
+            zones: std::collections::HashMap::new(),
+        };
+        assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn test_load_nonexistent_returns_error() {
+        assert!(load(Path::new("/nonexistent/path/nanodns.json")).is_err());
+    }
+
+    #[test]
+    fn test_write_example_creates_valid_file() {
+        let path = tmp("test_cfg_example.json");
+        write_example(&path).unwrap();
+        let cfg = load(&path).unwrap();
+        assert!(!cfg.records.is_empty());
+        assert_eq!(cfg.server.port, 53);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_persist_version_updates_only_version() {
+        let path = tmp("test_persist_v.json");
+        write_example(&path).unwrap();
+        let original = load(&path).unwrap();
+        let original_records = original.records.len();
+
+        persist_version(&path, 99).unwrap();
+        let updated = load(&path).unwrap();
+
+        assert_eq!(updated.server.config_version, 99);
+        assert_eq!(
+            updated.records.len(),
+            original_records,
+            "persist_version must not change records"
+        );
+        assert_eq!(
+            updated.server.port, original.server.port,
+            "persist_version must not change other server fields"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_save_round_trip() {
+        let path = tmp("test_save_rt.json");
+        let cfg = Config {
+            server: ServerConfig {
+                config_version: 77,
+                port: 5353,
+                ..ServerConfig::default()
+            },
+            records: vec![DnsRecord {
+                name: "rt.lan".into(),
+                record_type: RecordType::A,
+                value: "10.20.30.40".into(),
+                ttl: 120,
+                priority: None,
+                wildcard: false,
+                comment: Some("round trip".into()),
+            }],
+            rewrites: vec![],
+            zones: std::collections::HashMap::new(),
+        };
+
+        save(&path, &cfg).unwrap();
+        let loaded = load(&path).unwrap();
+
+        assert_eq!(loaded.server.config_version, 77);
+        assert_eq!(loaded.server.port, 5353);
+        assert_eq!(loaded.records[0].value, "10.20.30.40");
+        assert_eq!(loaded.records[0].ttl, 120);
+        std::fs::remove_file(&path).ok();
+    }
+}

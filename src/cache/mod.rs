@@ -90,3 +90,77 @@ pub struct CacheStats {
     pub active: usize,
     pub capacity: usize,
 }
+
+// ─── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_and_get() {
+        let c = DnsCache::new(10, 300, true);
+        let key = DnsCache::key("foo.lan", 1);
+        c.set(key.clone(), vec![1, 2, 3], None);
+        assert_eq!(c.get(&key), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn test_get_miss_returns_none() {
+        let c = DnsCache::new(10, 300, true);
+        assert_eq!(c.get("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_disabled_cache_never_stores() {
+        let c = DnsCache::new(10, 300, false);
+        let key = DnsCache::key("foo.lan", 1);
+        c.set(key.clone(), vec![1], None);
+        assert_eq!(c.get(&key), None);
+        assert_eq!(c.stats().size, 0);
+    }
+
+    #[test]
+    fn test_invalidate_clears_all() {
+        let c = DnsCache::new(10, 300, true);
+        c.set(DnsCache::key("a.lan", 1), vec![1], None);
+        c.set(DnsCache::key("b.lan", 1), vec![2], None);
+        assert!(c.stats().size > 0);
+        c.invalidate();
+        assert_eq!(c.stats().size, 0);
+    }
+
+    #[test]
+    fn test_custom_ttl_zero_expires_immediately() {
+        let c = DnsCache::new(10, 300, true);
+        let key = DnsCache::key("ttl.lan", 1);
+        c.set(key.clone(), vec![9], Some(0)); // TTL = 0 s
+                                              // Entry may or may not be stored depending on timing, but it should
+                                              // not appear as active
+        let stats = c.stats();
+        assert_eq!(stats.active, 0);
+    }
+
+    #[test]
+    fn test_key_includes_qtype() {
+        let k1 = DnsCache::key("foo.lan", 1);
+        let k2 = DnsCache::key("foo.lan", 28);
+        assert_ne!(k1, k2, "A and AAAA must have different cache keys");
+    }
+
+    #[test]
+    fn test_stats_reports_capacity() {
+        let c = DnsCache::new(42, 300, true);
+        assert_eq!(c.stats().capacity, 42);
+    }
+
+    #[test]
+    fn test_eviction_at_capacity() {
+        let c = DnsCache::new(2, 300, true);
+        c.set(DnsCache::key("a.lan", 1), vec![1], None);
+        c.set(DnsCache::key("b.lan", 1), vec![2], None);
+        // Third entry should evict one of the expired/oldest entries
+        c.set(DnsCache::key("c.lan", 1), vec![3], None);
+        assert!(c.stats().size <= 2);
+    }
+}
