@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::RecordType;
-use hickory_proto::serialize::binary::BinEncodable;
+use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
@@ -125,11 +125,37 @@ impl Resolver {
             return resp;
         }
 
+        // ── Zone authority check ───────────────────────────────────────────────
+        // If the queried name falls within a declared zone but has no local record,
+        // return NXDOMAIN — do NOT forward to upstream. This matches original behaviour.
+        if !config.zones.is_empty() {
+            for zone_name in config.zones.keys() {
+                let zone = zone_name.trim_end_matches('.');
+                if name_bare == zone || name_bare.ends_with(&format!(".{}", zone)) {
+                    if config.server.log_queries {
+                        info!(
+                            "zone-nxdomain {} {:?} (authoritative zone {})",
+                            name_bare, qtype, zone
+                        );
+                    }
+                    return packet::nxdomain(query);
+                }
+            }
+        }
+
         // ── Upstream forwarding ───────────────────────────────────────────────
         if config.server.log_queries {
             info!("forward {} {:?} → upstream", name_bare, qtype);
         }
-        match self.forward(query, &config.server.upstream).await {
+        match self
+            .forward(
+                query,
+                &config.server.upstream,
+                config.server.upstream_port,
+                config.server.upstream_timeout,
+            )
+            .await
+        {
             Ok(resp) => {
                 if config.server.log_queries {
                     info!(
@@ -240,40 +266,41 @@ impl Resolver {
         &self,
         query: &Message,
         upstream_servers: &[String],
+        upstream_port: u16,
+        timeout_secs: u64,
     ) -> anyhow::Result<Message> {
         let query_bytes = query.to_bytes()?;
+        let timeout = Duration::from_secs(timeout_secs);
 
         for server in upstream_servers {
-            let addr = if server.contains(':') {
-                server.parse::<SocketAddr>()?
+            let addr: SocketAddr = if server.contains(':') {
+                server.parse()?
             } else {
-                format!("{}:53", server).parse::<SocketAddr>()?
+                format!("{}:{}", server, upstream_port).parse()?
             };
 
-            match self.send_udp(&query_bytes, addr).await {
-                Ok(resp_bytes) => {
-                    let resp = Message::from_vec(&resp_bytes)?;
-                    return Ok(resp);
-                }
+            match self.send_udp(&query_bytes, addr, timeout).await {
+                Ok(resp_bytes) => return Ok(Message::from_vec(&resp_bytes)?),
                 Err(e) => {
                     warn!("Upstream {} failed: {}", server, e);
-                    continue;
                 }
             }
         }
-
         anyhow::bail!("All upstream servers failed");
     }
 
-    async fn send_udp(&self, query: &[u8], addr: SocketAddr) -> anyhow::Result<Vec<u8>> {
-        // Use unconnected send_to/recv_from to avoid Windows WSAECONNRESET (10054)
-        // that occurs with connect() when a previous packet gets an ICMP rejection.
+    async fn send_udp(
+        &self,
+        query: &[u8],
+        addr: SocketAddr,
+        timeout: Duration,
+    ) -> anyhow::Result<Vec<u8>> {
+        // Unconnected send_to/recv_from avoids Windows WSAECONNRESET (10054)
+        // that occurs with connect() when a previous packet hits a closed port.
         let sock = UdpSocket::bind("0.0.0.0:0").await?;
         sock.send_to(query, addr).await?;
-
         let mut buf = vec![0u8; 4096];
-        let (n, _) =
-            tokio::time::timeout(Duration::from_secs(3), sock.recv_from(&mut buf)).await??;
+        let (n, _) = tokio::time::timeout(timeout, sock.recv_from(&mut buf)).await??;
         Ok(buf[..n].to_vec())
     }
 }

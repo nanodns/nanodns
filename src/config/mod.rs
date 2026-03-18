@@ -7,27 +7,54 @@ use std::path::Path;
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
+
     #[serde(default = "default_port")]
     pub port: u16,
+
     #[serde(default = "default_upstream")]
     pub upstream: Vec<String>,
+
+    /// Seconds before a single upstream attempt is abandoned
+    #[serde(default = "default_upstream_timeout")]
+    pub upstream_timeout: u64,
+
+    /// Port used when contacting upstream resolvers
+    #[serde(default = "default_upstream_port")]
+    pub upstream_port: u16,
+
     #[serde(default = "bool_true")]
     pub cache_enabled: bool,
+
     #[serde(default = "default_cache_ttl")]
     pub cache_ttl: u32,
+
     #[serde(default = "default_cache_size")]
     pub cache_size: usize,
+
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
     #[serde(default)]
     pub log_queries: bool,
+
     #[serde(default = "bool_true")]
     pub hot_reload: bool,
-    pub mgmt_port: Option<u16>,
-    #[serde(default)]
-    pub mgmt_host: Option<String>,
+
+    /// Management API listen address
+    #[serde(default = "default_mgmt_host")]
+    pub mgmt_host: String,
+
+    /// Management API port — 0 = disabled
+    #[serde(default)] // default is 0 (disabled)
+    pub mgmt_port: u16,
+
+    /// Peer management addresses in "host:port" format
     #[serde(default)]
     pub peers: Vec<String>,
+
+    /// Monotonic version counter — managed automatically, never edit by hand
+    #[serde(default = "default_version")]
+    pub config_version: u64,
 }
 
 fn default_host() -> String {
@@ -38,6 +65,12 @@ fn default_port() -> u16 {
 }
 fn default_upstream() -> Vec<String> {
     vec!["8.8.8.8".into(), "1.1.1.1".into()]
+}
+fn default_upstream_timeout() -> u64 {
+    3
+}
+fn default_upstream_port() -> u16 {
+    53
 }
 fn bool_true() -> bool {
     true
@@ -51,6 +84,12 @@ fn default_cache_size() -> usize {
 fn default_log_level() -> String {
     "INFO".into()
 }
+fn default_mgmt_host() -> String {
+    "0.0.0.0".into()
+}
+fn default_version() -> u64 {
+    1
+}
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -58,22 +97,25 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             upstream: default_upstream(),
+            upstream_timeout: default_upstream_timeout(),
+            upstream_port: default_upstream_port(),
             cache_enabled: true,
             cache_ttl: default_cache_ttl(),
             cache_size: default_cache_size(),
             log_level: default_log_level(),
             log_queries: false,
             hot_reload: true,
-            mgmt_port: Some(9053),
-            mgmt_host: None,
+            mgmt_host: default_mgmt_host(),
+            mgmt_port: 0, // disabled by default
             peers: vec![],
+            config_version: 1,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "UPPERCASE")]
 pub enum RecordType {
+    #[serde(rename = "A")]
     A,
     #[serde(rename = "AAAA")]
     Aaaa,
@@ -101,6 +143,7 @@ pub struct DnsRecord {
     pub ttl: u32,
     #[serde(default)]
     pub priority: Option<u16>,
+    /// Match only direct (single-level) subdomains
     #[serde(default)]
     pub wildcard: bool,
     #[serde(default)]
@@ -124,6 +167,8 @@ pub struct RewriteRule {
     pub pattern: String,
     pub action: RewriteAction,
     pub value: Option<String>,
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,8 +198,16 @@ pub struct Config {
     pub rewrites: Vec<RewriteRule>,
     #[serde(default)]
     pub zones: HashMap<String, ZoneConfig>,
-    #[serde(default)]
-    pub version: u64,
+}
+
+impl Config {
+    /// Version accessor — always use config_version field
+    pub fn version(&self) -> u64 {
+        self.server.config_version
+    }
+    pub fn set_version(&mut self, v: u64) {
+        self.server.config_version = v;
+    }
 }
 
 pub fn load(path: &Path) -> Result<Config> {
@@ -191,14 +244,18 @@ pub fn write_example(path: &Path) -> Result<()> {
             "host": "0.0.0.0",
             "port": 53,
             "upstream": ["8.8.8.8", "1.1.1.1"],
+            "upstream_timeout": 3,
+            "upstream_port": 53,
             "cache_enabled": true,
             "cache_ttl": 300,
             "cache_size": 1000,
             "log_level": "INFO",
             "log_queries": false,
             "hot_reload": true,
+            "mgmt_host": "0.0.0.0",
             "mgmt_port": 9053,
-            "peers": []
+            "peers": [],
+            "config_version": 1
         },
         "zones": {
             "internal.lan": {
@@ -219,12 +276,13 @@ pub fn write_example(path: &Path) -> Result<()> {
             { "name": "db.internal.lan",    "type": "A",     "value": "192.168.1.101" },
             { "name": "api.internal.lan",   "type": "CNAME", "value": "web.internal.lan" },
             { "name": "internal.lan",       "type": "MX",    "value": "mail.internal.lan", "priority": 10 },
-            { "name": "*.app.internal.lan", "type": "A",     "value": "192.168.1.200", "wildcard": true },
+            { "name": "app.internal.lan",   "type": "A",     "value": "192.168.1.200", "wildcard": true,
+              "comment": "matches foo.app.internal.lan but NOT a.b.app.internal.lan" },
             { "name": "internal.lan",       "type": "TXT",   "value": "v=spf1 mx ~all" }
         ],
         "rewrites": [
-            { "match": "ads.example.com", "action": "nxdomain" },
-            { "match": "*.tracker.net",   "action": "nxdomain" }
+            { "match": "ads.example.com",  "action": "nxdomain", "comment": "block ads" },
+            { "match": "*.tracker.net",    "action": "nxdomain" }
         ]
     });
     let json = serde_json::to_string_pretty(&example)?;

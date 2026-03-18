@@ -30,13 +30,24 @@ enum Commands {
         #[arg(short, long, default_value = "nanodns.json")]
         config: PathBuf,
 
-        /// Override bind host (default: read from config file)
+        /// Override DNS bind host (default: read from config)
         #[arg(long)]
         host: Option<String>,
 
-        /// Override DNS port (default: read from config file)
+        /// Override DNS port (default: read from config)
         #[arg(short, long)]
         port: Option<u16>,
+
+        /// Override management API host (default: read from config)
+        #[arg(long)]
+        mgmt_host: Option<String>,
+
+        /// Override management API port — 0 = disabled (default: read from config)
+        /// Useful for running multiple nodes on one machine:
+        ///   nanodns start --port 5353 --mgmt-port 9053 --config node1.json
+        ///   nanodns start --port 5354 --mgmt-port 9054 --config node2.json
+        #[arg(long)]
+        mgmt_port: Option<u16>,
 
         /// Override log level: TRACE, DEBUG, INFO, WARN, ERROR
         #[arg(long)]
@@ -61,23 +72,34 @@ async fn main() -> Result<()> {
             config,
             host,
             port,
+            mgmt_host,
+            mgmt_port,
             log_level,
             no_cache,
         } => {
-            // Load config first — CLI flags are overrides only
-            let cfg = config::load(&config)?;
+            // Load config first — CLI flags override config file values
+            let mut cfg = config::load(&config)?;
 
-            // CLI flag > config file value
-            let effective_host = host.unwrap_or_else(|| cfg.server.host.clone());
-            let effective_port = port.unwrap_or(cfg.server.port);
+            // CLI flag > config file: apply overrides
+            if let Some(h) = host {
+                cfg.server.host = h;
+            }
+            if let Some(p) = port {
+                cfg.server.port = p;
+            }
+            if let Some(mh) = mgmt_host {
+                cfg.server.mgmt_host = mh;
+            }
+            if let Some(mp) = mgmt_port {
+                cfg.server.mgmt_port = mp;
+            }
+
             let effective_log = log_level.unwrap_or_else(|| cfg.server.log_level.clone());
 
-            // Build tracing filter.
-            // If log_queries is enabled in config, also enable debug for the server module
-            // so per-query log lines appear.
+            // Build tracing filter
             let filter = if cfg.server.log_queries {
                 format!(
-                    "nanodns={},nanodns::dns::resolver=debug",
+                    "nanodns={},nanodns::dns::resolver=info",
                     effective_log.to_lowercase()
                 )
             } else {
@@ -93,14 +115,15 @@ async fn main() -> Result<()> {
 
             info!("NanoDNS v{} starting", env!("CARGO_PKG_VERSION"));
             info!(
-                "Config: {} | bind={}:{} | log_level={}",
-                config.display(),
-                effective_host,
-                effective_port,
-                effective_log
+                "bind={}:{} | mgmt={}:{} | log={}",
+                cfg.server.host,
+                cfg.server.port,
+                cfg.server.mgmt_host,
+                cfg.server.mgmt_port,
+                effective_log,
             );
 
-            server::run(cfg, effective_host, effective_port, no_cache, config).await?;
+            server::run(cfg, no_cache, config).await?;
         }
 
         Commands::Init { output } => {
@@ -116,21 +139,30 @@ async fn main() -> Result<()> {
             match config::load(&config) {
                 Ok(cfg) => {
                     println!("✓ Config valid: {}", config.display());
-                    println!("  Records  : {}", cfg.records.len());
-                    println!("  Rewrites : {}", cfg.rewrites.len());
-                    println!("  Zones    : {}", cfg.zones.len());
-                    println!("  Bind     : {}:{}", cfg.server.host, cfg.server.port);
-                    println!("  Upstream : {:?}", cfg.server.upstream);
+                    println!("  Records        : {}", cfg.records.len());
+                    println!("  Rewrites       : {}", cfg.rewrites.len());
+                    println!("  Zones          : {}", cfg.zones.len());
+                    println!("  Bind           : {}:{}", cfg.server.host, cfg.server.port);
                     println!(
-                        "  Cache    : enabled={} ttl={}s size={}",
+                        "  Upstream       : {:?} timeout={}s port={}",
+                        cfg.server.upstream, cfg.server.upstream_timeout, cfg.server.upstream_port
+                    );
+                    println!(
+                        "  Cache          : enabled={} ttl={}s size={}",
                         cfg.server.cache_enabled, cfg.server.cache_ttl, cfg.server.cache_size
                     );
-                    println!("  Hot-reload: {}", cfg.server.hot_reload);
-                    if let Some(mp) = cfg.server.mgmt_port {
-                        println!("  Mgmt API : :{}", mp);
+                    println!("  Hot-reload     : {}", cfg.server.hot_reload);
+                    println!("  Config version : {}", cfg.server.config_version);
+                    if cfg.server.mgmt_port > 0 {
+                        println!(
+                            "  Mgmt API       : {}:{}",
+                            cfg.server.mgmt_host, cfg.server.mgmt_port
+                        );
+                    } else {
+                        println!("  Mgmt API       : disabled");
                     }
                     if !cfg.server.peers.is_empty() {
-                        println!("  Peers    : {:?}", cfg.server.peers);
+                        println!("  Peers          : {:?}", cfg.server.peers);
                     }
                 }
                 Err(e) => {

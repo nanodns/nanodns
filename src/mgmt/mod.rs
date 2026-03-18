@@ -1,12 +1,12 @@
-//! HTTP management API served by axum.
+//! HTTP management API (axum).
 //!
 //! Endpoints:
-//!   GET  /health        — liveness (503 if broken)
-//!   GET  /ready         — readiness (503 until config loaded)
-//!   GET  /metrics       — cache stats, query count, uptime, version
-//!   GET  /cluster       — peer status
-//!   GET  /config/raw    — raw config JSON (used by peer catch-up)
-//!   POST /reload        — reload from disk, bump version, push to peers
+//!   GET  /health        — liveness probe
+//!   GET  /ready         — readiness probe
+//!   GET  /metrics       — cache stats, query count, uptime, config_version
+//!   GET  /cluster       — this node + all peers with version & reachability
+//!   GET  /config/raw    — full config JSON (used by peer catch-up pull)
+//!   POST /reload        — reload from disk, bump config_version, push to peers
 //!   POST /sync          — accept versioned config push from a peer
 
 use std::path::PathBuf;
@@ -26,9 +26,7 @@ use tracing::{info, warn};
 
 use crate::config;
 use crate::server::AppState;
-use crate::sync;
-
-// ─── Shared handler state ─────────────────────────────────────────────────────
+use crate::sync::{self, SyncPayload};
 
 #[derive(Clone)]
 struct MgmtState {
@@ -36,11 +34,10 @@ struct MgmtState {
     config_path: PathBuf,
 }
 
-// ─── Start the HTTP server ────────────────────────────────────────────────────
+// ─── Start ────────────────────────────────────────────────────────────────────
 
-pub async fn start(app: Arc<AppState>, host: &str, port: u16, config_path: PathBuf) -> Result<()> {
+pub async fn start(app: Arc<AppState>, addr: &str, config_path: PathBuf) -> Result<()> {
     let state = MgmtState { app, config_path };
-
     let router = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -51,33 +48,31 @@ pub async fn start(app: Arc<AppState>, host: &str, port: u16, config_path: PathB
         .route("/sync", post(sync_handler))
         .with_state(state);
 
-    let addr = format!("{}:{}", host, port);
     info!("Management API listening on http://{}", addr);
-
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router).await?;
     Ok(())
 }
 
-// ─── Handlers ─────────────────────────────────────────────────────────────────
+// ─── Liveness / Readiness ────────────────────────────────────────────────────
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
 }
 
 async fn ready(State(s): State<MgmtState>) -> impl IntoResponse {
-    // Ready once we have at least one record or explicit empty config loaded
-    let cfg = s.app.config.load();
-    let _ = cfg; // config is always loaded if we're here
+    let _cfg = s.app.config.load(); // always ready if we have a config loaded
     (
         StatusCode::OK,
         Json(serde_json::json!({ "status": "ready" })),
     )
 }
 
+// ─── Metrics ─────────────────────────────────────────────────────────────────
+
 #[derive(Serialize)]
 struct MetricsResponse {
-    version: u64,
+    config_version: u64,
     uptime_secs: u64,
     query_count: u64,
     cache_size: usize,
@@ -89,47 +84,50 @@ struct MetricsResponse {
 async fn metrics(State(s): State<MgmtState>) -> impl IntoResponse {
     let cfg = s.app.config.load();
     let stats = s.app.cache.stats();
-    let resp = MetricsResponse {
-        version: cfg.version,
+    Json(MetricsResponse {
+        config_version: cfg.server.config_version,
         uptime_secs: s.app.start_time.elapsed().as_secs(),
         query_count: s.app.query_count.load(Ordering::Relaxed),
         cache_size: stats.size,
         cache_active: stats.active,
         cache_capacity: stats.capacity,
         record_count: cfg.records.len(),
-    };
-    Json(resp)
+    })
 }
+
+// ─── Cluster status ───────────────────────────────────────────────────────────
 
 async fn cluster(State(s): State<MgmtState>) -> impl IntoResponse {
     let cfg = s.app.config.load();
     let peers = &cfg.server.peers;
-    let mut peer_statuses = serde_json::Map::new();
+    let mut peer_map = serde_json::Map::new();
 
     for peer in peers {
         let status = match sync::fetch_peer_version(peer).await {
             Ok(v) => serde_json::json!({
-                "version": v,
-                "status": if v == cfg.version { "synced" } else { "out_of_sync" }
+                "config_version": v,
+                "status": if v == cfg.server.config_version { "synced" } else { "out_of_sync" }
             }),
             Err(_) => serde_json::json!({ "status": "unreachable" }),
         };
-        peer_statuses.insert(peer.clone(), status);
+        peer_map.insert(peer.clone(), status);
     }
 
     Json(serde_json::json!({
         "this": {
-            "version": cfg.version,
+            "config_version": cfg.server.config_version,
             "status": "healthy"
         },
-        "peers": peer_statuses
+        "peers": peer_map
     }))
 }
 
+// ─── Raw config (used by peer pull) ──────────────────────────────────────────
+
 async fn config_raw(State(s): State<MgmtState>) -> impl IntoResponse {
-    let cfg = s.app.config.load();
-    let cfg_ref: &crate::config::Config = &cfg;
-    match serde_json::to_string(cfg_ref) {
+    let guard = s.app.config.load();
+    let cfg: &config::Config = &guard;
+    match serde_json::to_string(cfg) {
         Ok(json) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -140,25 +138,28 @@ async fn config_raw(State(s): State<MgmtState>) -> impl IntoResponse {
     }
 }
 
+// ─── Reload ───────────────────────────────────────────────────────────────────
+
 async fn reload(State(s): State<MgmtState>) -> impl IntoResponse {
-    info!("Manual reload triggered via API");
+    info!("Manual reload triggered via /reload");
+
     match config::load(&s.config_path) {
         Ok(mut new_cfg) => {
-            // Bump version
-            let old_version = s.app.config.load().version;
-            new_cfg.version = old_version + 1;
+            // Bump config_version — this is the source of truth for HA sync
+            let new_version = s.app.config.load().server.config_version + 1;
+            new_cfg.server.config_version = new_version;
 
             let peers = new_cfg.server.peers.clone();
+
             s.app.cache.invalidate();
             s.app.config.store(Arc::new(new_cfg));
-            info!("Config reloaded, version bumped to {}", old_version + 1);
+            info!("Reloaded — config_version now {}", new_version);
 
-            // Push to peers asynchronously
+            // Push to peers immediately (best-effort, non-blocking)
             if !peers.is_empty() {
-                let cfg = s.app.config.load();
-                let cfg_clone = (*cfg).clone();
+                let cfg_snapshot = (*s.app.config.load()).clone();
                 tokio::spawn(async move {
-                    sync::push_to_peers(&cfg_clone, &peers).await;
+                    sync::push_to_peers(&cfg_snapshot, &peers).await;
                 });
             }
 
@@ -166,7 +167,7 @@ async fn reload(State(s): State<MgmtState>) -> impl IntoResponse {
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "status": "reloaded",
-                    "version": old_version + 1
+                    "config_version": new_version
                 })),
             )
         }
@@ -182,31 +183,29 @@ async fn reload(State(s): State<MgmtState>) -> impl IntoResponse {
     }
 }
 
-#[derive(Deserialize)]
-struct SyncPayload {
-    version: u64,
-    config: config::Config,
-}
+// ─── Sync (peer push receiver) ────────────────────────────────────────────────
 
 async fn sync_handler(
     State(s): State<MgmtState>,
     Json(payload): Json<SyncPayload>,
 ) -> impl IntoResponse {
-    let current_version = s.app.config.load().version;
-    if payload.version <= current_version {
+    let my_version = s.app.config.load().server.config_version;
+
+    if payload.config_version <= my_version {
         return (
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "ignored",
-                "reason": "version not newer",
-                "current": current_version
+                "reason": "not newer",
+                "my_version": my_version,
+                "received_version": payload.config_version
             })),
         );
     }
 
     info!(
-        "Accepting config sync: version {} → {}",
-        current_version, payload.version
+        "Accepting peer sync: v{} → v{}",
+        my_version, payload.config_version
     );
     s.app.cache.invalidate();
     s.app.config.store(Arc::new(payload.config));
@@ -215,7 +214,7 @@ async fn sync_handler(
         StatusCode::OK,
         Json(serde_json::json!({
             "status": "applied",
-            "version": payload.version
+            "config_version": payload.config_version
         })),
     )
 }

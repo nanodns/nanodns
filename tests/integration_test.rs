@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{DNSClass, Name, RecordType};
-use hickory_proto::serialize::binary::BinEncodable;
+use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 
 use nanodns::cache::DnsCache;
 use nanodns::config::{
@@ -19,7 +19,6 @@ fn make_config(records: Vec<DnsRecord>, rewrites: Vec<RewriteRule>) -> Config {
         records,
         rewrites,
         zones: HashMap::new(),
-        version: 1,
     }
 }
 
