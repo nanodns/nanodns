@@ -7,6 +7,7 @@ One JSON file. A single 3 MB binary. Runs anywhere.
 
 [![CI](https://github.com/nanodns/nanodns/actions/workflows/ci.yml/badge.svg)](https://github.com/nanodns/nanodns/actions/workflows/test.yml)
 [![Release](https://github.com/nanodns/nanodns/actions/workflows/release.yml/badge.svg)](https://github.com/nanodns/nanodns/actions/workflows/release.yml)
+[![codecov](https://codecov.io/github/nanodns/nanodns/graph/badge.svg?token=UHNASP35NQ)](https://codecov.io/github/nanodns/nanodns)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![GHCR](https://img.shields.io/badge/image-ghcr.io-blue?logo=github)](https://github.com/nanodns/nanodns/pkgs/container/nanodns)
 
