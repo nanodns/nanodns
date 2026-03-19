@@ -57,6 +57,10 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: test
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write       # for artifact attestation
+      attestations: write   # for artifact attestation
     strategy:
       fail-fast: false
       matrix:
@@ -219,6 +223,11 @@ jobs:
           $hash = (Get-FileHash "${{ matrix.archive }}" -Algorithm SHA256).Hash.ToLower()
           "$hash  ${{ matrix.archive }}" | Out-File "${{ matrix.archive }}.sha256" -Encoding utf8
 
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ matrix.archive }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
@@ -233,6 +242,11 @@ jobs:
     name: Docker (GHCR)
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write        # push to GHCR
+      id-token: write        # cosign keyless signing + attestation
+      attestations: write    # image attestation
     steps:
       - uses: actions/checkout@v6
 
@@ -287,6 +301,13 @@ jobs:
         run: |
           cosign sign --yes \
             "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+
+      - name: Generate Docker image attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.docker-build.outputs.digest }}
+          push-to-registry: true
 
       - name: Output image digest
         run: echo "Image digest ${{ steps.docker-build.outputs.digest }}"
@@ -410,19 +431,22 @@ jobs:
 
   # ── 5. Publish to crates.io (OIDC Trusted Publishing) ────────────────────────
   #
-  # Uses the official rust-lang/crates-io-auth-action which exchanges GitHub's
-  # OIDC token for a 30-minute crates.io access token — no stored secret needed.
+  # Uses rust-lang/crates-io-auth-action which exchanges GitHub's OIDC token
+  # for a 30-minute crates.io access token — no stored secret needed.
   #
-  # One-time setup on crates.io (do this before the first release):
-  #   1. crates.io → Account Settings → Trusted Publishing → Add Publisher
-  #   2. Repository : <your-org>/<your-repo>
+  # One-time setup on crates.io:
+  #   1. Account Settings → Trusted Publishing → Add Publisher
+  #      Repository : <your-org>/<your-repo>
   #      Workflow   : release.yml
   #      Environment: release          ← must match `environment.name` below
-  #   3. Optionally enable "Require trusted publishing for all new versions"
+  #   2. Optionally enable "Require trusted publishing for all new versions"
   #
-  # One-time setup in GitHub repository settings:
+  # One-time setup in GitHub:
   #   Settings → Environments → New environment → name it "release"
-  #   Add protection rules as needed (e.g. required reviewers, tag-only deploys).
+  #
+  # Version workflow: bump Cargo.toml version BEFORE pushing the tag.
+  # The tag and Cargo.toml version must match — do NOT auto-patch here,
+  # that leaves a Cargo.toml.bak dirty file that blocks `cargo publish`.
   publish-crates:
     name: Publish to crates.io
     needs: test                      # gate on tests; runs parallel with build/docker
@@ -431,11 +455,12 @@ jobs:
     if: "!contains(github.ref_name, '-')"
 
     permissions:
-      id-token: write                # required for OIDC token exchange
+      id-token: write                # required for OIDC token exchange + attestation
       contents: read
+      attestations: write            # required for artifact attestation
 
     environment:
-      name: release                  # matches the Trusted Publishing environment on crates.io
+      name: release                  # matches Trusted Publishing environment on crates.io
       url: https://crates.io/crates/nanodns
 
     steps:
@@ -452,13 +477,26 @@ jobs:
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Patch Cargo.toml version from tag
+      - name: Verify Cargo.toml version matches tag
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
-          echo "Publishing crate version ${VERSION}"
-          grep '^version' Cargo.toml
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "Tag version   : ${TAG_VERSION}"
+          echo "Cargo version : ${CARGO_VERSION}"
+          if [ "${TAG_VERSION}" != "${CARGO_VERSION}" ]; then
+            echo "::error::Version mismatch — Cargo.toml has ${CARGO_VERSION} but tag is ${TAG_VERSION}"
+            echo "::error::Please bump Cargo.toml version before pushing the tag."
+            exit 1
+          fi
+
+      - name: Package crate
+        run: cargo package --no-verify
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: target/package/*.crate
 
       - name: Authenticate with crates.io (OIDC)
         uses: rust-lang/crates-io-auth-action@v1
@@ -469,7 +507,6 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         # --no-verify skips a local rebuild; tests already ran in the `test` job.
-        # Remove --no-verify if you want an additional compile check before publishing.
 
   # ── 6. GitHub Release + upload all binaries ───────────────────────────────
   github-release:
