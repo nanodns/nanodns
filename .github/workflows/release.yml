@@ -21,7 +21,7 @@ on:
 permissions:
   contents: write        # create releases, upload assets
   packages: write        # push to GHCR
-  id-token: write        # cosign keyless signing + crates.io OIDC Trusted Publishing
+  id-token: write        # cosign keyless signing + crates.io OIDC (rust-lang/crates-io-auth-action)
 
 env:
   CARGO_TERM_COLOR: always
@@ -408,29 +408,34 @@ jobs:
           path: changelog/CHANGELOG.md
           retention-days: 3
 
-  # ── 5. Publish to crates.io (OIDC Trusted Publishing — no token needed) ──────
+  # ── 5. Publish to crates.io (OIDC Trusted Publishing) ────────────────────────
   #
-  # Prerequisites (one-time setup on crates.io):
-  #   1. Log in to crates.io → Account Settings → Trusted Publishing → Add Publisher
-  #   2. Set: Repository = <org>/<repo>  Workflow = release.yml  Environment = (leave blank)
-  #   3. Enable "Require trusted publishing for all new versions" for extra security.
+  # Uses the official rust-lang/crates-io-auth-action which exchanges GitHub's
+  # OIDC token for a 30-minute crates.io access token — no stored secret needed.
   #
-  # No CARGO_REGISTRY_TOKEN secret required — GitHub's OIDC token is used directly.
-  # Pre-releases (tags containing '-') are published with --no-verify skipped but
-  # marked as pre-release on crates.io automatically via the semver version string.
+  # One-time setup on crates.io (do this before the first release):
+  #   1. crates.io → Account Settings → Trusted Publishing → Add Publisher
+  #   2. Repository : <your-org>/<your-repo>
+  #      Workflow   : release.yml
+  #      Environment: release          ← must match `environment.name` below
+  #   3. Optionally enable "Require trusted publishing for all new versions"
+  #
+  # One-time setup in GitHub repository settings:
+  #   Settings → Environments → New environment → name it "release"
+  #   Add protection rules as needed (e.g. required reviewers, tag-only deploys).
   publish-crates:
     name: Publish to crates.io
-    needs: test                   # only needs tests; runs parallel with build/docker
+    needs: test                      # gate on tests; runs parallel with build/docker
     runs-on: ubuntu-latest
-    # Skip pre-releases (v1.2.3-rc1 etc.) — crates.io doesn't support pre-release channels
+    # crates.io has no pre-release channel — skip tags like v1.2.3-rc1
     if: "!contains(github.ref_name, '-')"
 
     permissions:
-      id-token: write             # required for OIDC Trusted Publishing
+      id-token: write                # required for OIDC token exchange
       contents: read
 
     environment:
-      name: crates.io
+      name: release                  # matches the Trusted Publishing environment on crates.io
       url: https://crates.io/crates/nanodns
 
     steps:
@@ -447,18 +452,24 @@ jobs:
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Patch version from tag
+      - name: Patch Cargo.toml version from tag
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
-          echo "Publishing version ${VERSION}"
+          echo "Publishing crate version ${VERSION}"
           grep '^version' Cargo.toml
 
-      - name: Publish to crates.io (Trusted Publishing)
+      - name: Authenticate with crates.io (OIDC)
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish to crates.io
         run: cargo publish --no-verify
-        # --no-verify skips a redundant local build; the release gate already ran tests.
-        # Remove --no-verify if you want an extra build sanity-check before publishing.
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        # --no-verify skips a local rebuild; tests already ran in the `test` job.
+        # Remove --no-verify if you want an additional compile check before publishing.
 
   # ── 6. GitHub Release + upload all binaries ───────────────────────────────
   github-release:
