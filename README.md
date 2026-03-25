@@ -41,7 +41,7 @@ $ dig @127.0.0.1 api.dev.local +short
 
 ## Why NanoDNS (Rust)?
 
-The original [Python NanoDNS](https://github.com/nanodns/nanodns) is great. We kept everything that made it useful and rewrote the internals in Rust for deployments where resource consumption and reliability matter.
+The original [Python NanoDNS](https://github.com/iyuangang/nanodns) is great. We kept everything that made it useful and rewrote the internals in Rust for deployments where resource consumption and reliability matter.
 
 |  | Python NanoDNS | **NanoDNS (Rust)** |
 |--|:-:|:-:|
